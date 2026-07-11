@@ -7,3 +7,7 @@ dist/
 .cache
 pnpm-store/
 /tmp/
+99_输出结果/
+nginx-chat.conf
+nginx/
+.npmrc
