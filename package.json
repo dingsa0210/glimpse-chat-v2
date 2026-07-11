@@ -1,0 +1,20 @@
+{
+  "name": "glimpse-chat",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "corepack pnpm --parallel --filter @glimpse/web --filter @glimpse/api dev",
+    "dev:web": "corepack pnpm --filter @glimpse/web dev",
+    "dev:api": "corepack pnpm --filter @glimpse/api dev",
+    "build": "corepack pnpm -r build",
+    "lint": "corepack pnpm -r lint",
+    "typecheck": "corepack pnpm -r typecheck",
+    "db:generate": "corepack pnpm --filter @glimpse/api db:generate",
+    "db:migrate": "corepack pnpm --filter @glimpse/api db:migrate",
+    "dev:web:lan": "corepack pnpm --filter @glimpse/web dev:lan"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

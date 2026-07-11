@@ -1,0 +1,79 @@
+version: "3.9"
+
+services:
+  # ==================== PostgreSQL 数据库 ====================
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: glimpse
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-glimpse_secret_change_me}
+      POSTGRES_DB: glimpse_chat
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glimpse -d glimpse_chat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== Redis (可选，预留) ====================
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== API 服务 (NestJS) ====================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://glimpse:${DB_PASSWORD:-glimpse_secret_change_me}@db:5432/glimpse_chat
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change_me_to_a_random_64_char_string}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-7d}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      PORT: 4100
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      REDIS_URL: redis://redis:6379
+      MEDIA_UPLOAD_DIR: /app/uploads
+      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
+      API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-120}
+      API_RATE_LIMIT_WINDOW_MS: ${API_RATE_LIMIT_WINDOW_MS:-60000}
+    volumes:
+      - uploads:/app/uploads
+    ports:
+      - "127.0.0.1:4100:4100"
+
+  # ==================== Web 前端 (Next.js) ====================
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:

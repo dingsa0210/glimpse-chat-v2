@@ -1,0 +1,38 @@
+# ==================== API 生产镜像（使用预构建产物） ====================
+FROM node:24-alpine
+
+RUN apk add --no-cache tini
+
+WORKDIR /app
+
+# 复制预构建的 pnpm workspace 依赖
+COPY node_modules/.pnpm node_modules/.pnpm
+COPY node_modules/@prisma node_modules/@prisma
+COPY node_modules/@nestjs node_modules/@nestjs
+COPY node_modules/.modules.yaml node_modules/ 2>/dev/null || true
+
+# 复制 workspace 配置
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
+
+# 复制包配置
+COPY apps/api/package.json apps/api/
+COPY packages/shared/package.json packages/shared/
+
+# 复制 Prisma schema 和迁移
+COPY apps/api/prisma apps/api/prisma
+COPY apps/api/prisma.config.ts apps/api/
+
+# 复制构建产物
+COPY apps/api/dist apps/api/dist
+COPY packages/shared/dist packages/shared/dist
+
+# 创建上传目录
+RUN mkdir -p /app/uploads
+
+COPY docker-entrypoint-api.sh /app/
+RUN chmod +x /app/docker-entrypoint-api.sh
+
+EXPOSE 4100
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["/app/docker-entrypoint-api.sh"]

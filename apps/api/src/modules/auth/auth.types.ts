@@ -1,0 +1,39 @@
+﻿export type AuthenticatedUser = {
+  id: string;
+  email?: string | null;
+  phone?: string | null;
+  publicId?: string | null;
+  publicIdUpdatedAt?: string | null;
+  profilePublic?: boolean | null;
+  profileEmailPublic?: boolean | null;
+  profilePhonePublic?: boolean | null;
+  nickname: string;
+  avatarUrl?: string | null;
+  company?: string | null;
+  title?: string | null;
+  location?: string | null;
+  bio?: string | null;
+  signature?: string | null;
+  language: "zh" | "en";
+  role: "user" | "admin";
+};
+
+export type AccessTokenPayload = {
+  sub: string;
+  email?: string | null;
+  phone?: string | null;
+  publicId?: string | null;
+  publicIdUpdatedAt?: string | null;
+  profilePublic?: boolean | null;
+  profileEmailPublic?: boolean | null;
+  profilePhonePublic?: boolean | null;
+  nickname: string;
+  avatarUrl?: string | null;
+  company?: string | null;
+  title?: string | null;
+  location?: string | null;
+  bio?: string | null;
+  signature?: string | null;
+  language: "zh" | "en";
+  role?: "user" | "admin";
+};

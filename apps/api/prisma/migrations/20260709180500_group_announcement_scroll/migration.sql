@@ -1,0 +1,1 @@
+ALTER TABLE "Conversation" ADD COLUMN IF NOT EXISTS "announcementScroll" BOOLEAN NOT NULL DEFAULT true;

@@ -1,0 +1,182 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserLanguage {
+  ZH
+  EN
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  FILE
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String?  @unique
+  phone        String?  @unique
+  publicId     String?  @unique
+  publicIdUpdatedAt DateTime?
+  profilePublic Boolean @default(true)
+  profileEmailPublic Boolean @default(false)
+  profilePhonePublic Boolean @default(false)
+  passwordHash String
+  nickname     String
+  avatarUrl    String?
+  profileCompany String?
+  profileTitle String?
+  profileLocation String?
+  profileBio String?
+  profileSignature String?
+  language     UserLanguage @default(ZH)
+  role         UserRole @default(USER)
+  disabledAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships  ConversationMember[]
+  sentMessages Message[] @relation("SentMessages")
+  friendRequestsSent FriendRequest[] @relation("FriendRequestsSent")
+  friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
+  blocksSent UserBlock[] @relation("BlocksSent")
+  blocksReceived UserBlock[] @relation("BlocksReceived")
+  feedbacks Feedback[]
+}
+
+model FriendRequest {
+  id          String @id @default(cuid())
+  requesterId String
+  receiverId  String
+  status      FriendRequestStatus @default(PENDING)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  requester User @relation("FriendRequestsSent", fields: [requesterId], references: [id])
+  receiver  User @relation("FriendRequestsReceived", fields: [receiverId], references: [id])
+
+  @@unique([requesterId, receiverId])
+}
+
+
+model UserBlock {
+  id        String   @id @default(cuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker User @relation("BlocksSent", fields: [blockerId], references: [id])
+  blocked User @relation("BlocksReceived", fields: [blockedId], references: [id])
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+}
+model Conversation {
+  id        String @id
+  type      ConversationType @default(DIRECT)
+  title     String?
+  avatarUrl String?
+  announcement String?
+  announcementScroll Boolean @default(true)
+  ownerId   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members  ConversationMember[]
+  messages Message[]
+}
+
+model ConversationMember {
+  id             String @id @default(cuid())
+  conversationId String
+  userId         String
+  invitedById    String?
+  joinedAt       DateTime @default(now())
+  lastReadAt     DateTime?
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  user         User @relation(fields: [userId], references: [id])
+
+  @@unique([conversationId, userId])
+  @@index([userId, lastReadAt])
+  @@index([invitedById])
+}
+
+model Message {
+  id             String @id
+  conversationId String
+  senderId       String
+  senderName     String?
+  type           MessageType @default(TEXT)
+  body           String?
+  mediaUrl       String?
+  mediaThumbnailUrl String?
+    transcript     String?
+    revokedAt      DateTime?
+  replyToMessageId String?
+  replyToMessageSenderName String?
+  replyToMessageType MessageType?
+  replyToMessageBody String?
+  sourceLanguage String?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  sender       User? @relation("SentMessages", fields: [senderId], references: [id])
+  translations MessageTranslation[]
+}
+
+model MessageTranslation {
+  id        String @id @default(cuid())
+  messageId String
+  language  String
+  body      String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id])
+
+  @@unique([messageId, language])
+}
+
+model Feedback {
+  id            String   @id @default(cuid())
+  userId        String
+  category      String   @default("general")
+  message       String
+  attachmentUrl String?
+  status        String   @default("OPEN")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+
+
+

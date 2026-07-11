@@ -1,0 +1,35 @@
+# Dependencies (prebuilt approach needs node_modules and build outputs)
+# node_modules — KEPT for API prebuilt image
+# apps/api/dist — KEPT for API prebuilt image
+# apps/web/.next — KEPT for Web prebuilt image
+# packages/shared/dist — KEPT for shared prebuilt image
+
+# IDE
+.git
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & cache
+*.log
+.npm
+.cache
+.pnpm-store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Uploads (开发时的测试文件)
+apps/api/99_输出结果
+
+# Documentation
+03_更新说明
+09_工作流版本库
+README.md

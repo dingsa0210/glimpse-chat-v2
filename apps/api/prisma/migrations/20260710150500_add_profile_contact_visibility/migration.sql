@@ -1,0 +1,2 @@
+ALTER TABLE "User" ADD COLUMN "profileEmailPublic" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "User" ADD COLUMN "profilePhonePublic" BOOLEAN NOT NULL DEFAULT false;

@@ -1,0 +1,16 @@
+# Web 前端生产镜像 — 纯 COPY 方式，无 RUN 命令
+FROM node:24-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+
+# 1. 复制 Next.js standalone 核心（含 server.js + node_modules）
+COPY apps/web/.next/standalone ./
+
+# 2. 复制静态资源（standalone 模式需要手动复制）
+COPY apps/web/.next/static ./apps/web/.next/static
+
+# 3. 复制 public 目录
+COPY apps/web/public ./apps/web/public
+
+EXPOSE 3000
+CMD ["node", "apps/web/server.js"]
