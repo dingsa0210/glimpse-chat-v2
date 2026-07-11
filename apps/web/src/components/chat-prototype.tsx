@@ -5574,7 +5574,7 @@ export function ChatPrototype() {
               const showTranslation = isTextMessage && Boolean(translated) && (messageDisplayMode === "translated" || messageDisplayMode === "bilingual");
               const messageMediaUrl = mediaPreviewUrl(message);
               const messageDownload = mediaDownloadUrl(message);
-              const senderAvatarUrl = mine ? (profileAvatarPreviewUrl || profileAvatarUrl || currentUser?.avatarUrl) : selected.avatarUrl;
+              const senderAvatarUrl = mine ? (profileAvatarPreviewUrl || profileAvatarUrl || currentUser?.avatarUrl) : (selected.type === "group" ? (groupMembers.find((member) => member.user.id === message.senderId)?.user.avatarUrl ?? selected.avatarUrl) : selected.avatarUrl);
               const revokeBatch = mine ? revokeBatchForMessage(message) : [];
               const selectedForMultiAction = selectedMessageIds.has(message.id);
               return (
