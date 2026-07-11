@@ -4,6 +4,26 @@
 
 ---
 
+## 9. /conversations 页面再次 429 Too Many Requests（trust proxy 缺失）
+
+**时间**：2026-07-11
+
+**现象**：修复 nginx 路由后 `/conversations` 页面仍间歇性返回 429。
+
+**根因**：NestJS/Express 未配置 `trust proxy`。nginx 通过 `X-Forwarded-For` 传递真实客户端 IP，但 Express 默认不信任代理头，`req.ip` 始终返回直连 IP（nginx 的 `127.0.0.1`）。
+
+全局限频 key 为 `ip:path`，导致**所有用户**的请求都被标记为 `127.0.0.1:/conversations`，共享 120次/分钟的配额。任何用户多刷新几次页面，就会耗尽全局配额，其他用户也一并被 429。
+
+**修复**：在 `main.ts` 添加 `trust proxy` 配置：
+
+```typescript
+app.getHttpAdapter().getInstance().set("trust proxy", true);
+```
+
+Express 此后会信任 `X-Forwarded-For` 头，`req.ip` 返回真实客户端 IP，每个用户独立享有 120次/分钟的限额。
+
+---
+
 ## 8. Cannot read properties of undefined (reading 'map') — 对话历史报错
 
 **时间**：2026-07-11

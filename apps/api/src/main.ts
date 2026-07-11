@@ -61,6 +61,7 @@ async function bootstrap() {
     logger: isProduction ? ["error", "warn"] : ["log", "error", "warn", "debug", "verbose"]
   });
   const config = app.get(ConfigService);
+  app.getHttpAdapter().getInstance().set("trust proxy", true);
   const uploadBodyLimit = config.get<string>("MEDIA_UPLOAD_BODY_LIMIT", "750mb");
   app.use(expressRuntime.json({ limit: uploadBodyLimit }));
   app.use(expressRuntime.urlencoded({ extended: true, limit: uploadBodyLimit }));
