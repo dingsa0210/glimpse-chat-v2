@@ -4,6 +4,38 @@
 
 ---
 
+## 11. 群聊消息头像回退逻辑不合理
+
+**时间**：2026-07-11
+
+**现象**：群聊中没上传头像的用户，消息旁显示群头像，而非像单聊那样显示昵称首字母。
+
+**根因**：`senderAvatarUrl` 的 fallback 用了 `?? selected.avatarUrl`（群头像），掩盖了 `Avatar` 组件自身的首字母回退逻辑。
+
+**修复**：去掉 `?? selected.avatarUrl`，让 `avatarUrl` 为 `undefined` 时自然落到 `Avatar` 组件的 `initials`（昵称前两位大写字母）。
+
+---
+
+## 10. 群聊消息所有人头像相同
+
+**时间**：2026-07-11
+
+**现象**：群聊中所有成员的消息左侧头像都是群头像，无法区分发送者。
+
+**根因**：第 5577 行获取别人消息头像时用了 `selected.avatarUrl`，而 `selected` 在群聊中是群会话对象，`selected.avatarUrl` 是群头像。
+
+**修复**：对群聊消息按 `message.senderId` 从 `groupMembers` 中查找发送者的真实 `avatarUrl`：
+
+```typescript
+const senderAvatarUrl = mine
+  ? (...)
+  : selected.type === "group"
+    ? groupMembers.find(m => m.user.id === message.senderId)?.user.avatarUrl
+    : selected.avatarUrl;
+```
+
+---
+
 ## 9. /conversations 页面再次 429 Too Many Requests（trust proxy 缺失）
 
 **时间**：2026-07-11
