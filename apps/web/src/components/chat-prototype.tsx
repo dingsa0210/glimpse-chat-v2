@@ -5623,11 +5623,11 @@ export function ChatPrototype() {
                     ) : null}
                     {!message.revokedAt && message.mediaUrl && message.type === "file" ? (
                       <div className={`mt-2 max-w-[520px] rounded border p-3 text-sm ${mine ? "border-white/20 bg-white/10 text-white" : "border-line bg-paper text-ink"}`}>
-                        <a className="flex items-center gap-3" href={messageDownload} download={message.body ?? "download"} title={message.body ?? "File attachment"}>
+                        <a className="flex items-center gap-3" href={mediaPreviewUrl(message)} target="_blank" rel="noopener noreferrer" title={message.body ?? "File attachment"}>
                           <FileText className="shrink-0" size={20} />
                           <span className="min-w-0 flex-1 truncate">{message.body ?? "File attachment"}</span>
-                          <Download className="shrink-0" size={17} />
                         </a>
+                        <a className="mt-1 inline-flex shrink-0 items-center gap-1" href={messageDownload} download={message.body ?? "download"} title={t.downloadOriginal}><Download size={17} /></a>
                         {isZipArchive(message) ? <button className={`mt-2 text-xs font-medium underline-offset-2 hover:underline ${mine ? "text-white/80" : "text-brand"}`} onClick={() => void openArchivePreview(message)} type="button">{uiLanguage === "zh" ? "预览压缩包" : "Preview archive"}</button> : null}
                       </div>
                     ) : null}
