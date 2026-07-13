@@ -51,9 +51,7 @@ export class VerificationService implements OnModuleInit, OnModuleDestroy {
 
   /** 生成 6 位随机数字验证码 */
   generateCode(): string {
-    const buffer = new Uint32Array(1);
-    crypto.getRandomValues(buffer);
-    const value = (buffer[0] ?? 0) % 1_000_000;
+    const value = crypto.randomInt(0, 1_000_000);
     return String(value).padStart(CODE_LENGTH, "0");
   }
 

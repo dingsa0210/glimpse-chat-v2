@@ -14,7 +14,7 @@ export class MailService {
     const port = this.config.get<number>("SMTP_PORT", 465);
     const secure = this.config.get<string>("SMTP_SECURE", "true") === "true";
     const user = this.config.get<string>("SMTP_USER", "");
-    const pass = this.config.get<string>("SMTP_PASS", "");
+    const pass = this.config.get<string>("SMTP_PASS", this.config.get<string>("SMTP_PASSWORD", ""));
 
     this.from = this.config.get<string>("SMTP_FROM", user || "noreply@verify.glimpsetech.cn");
 

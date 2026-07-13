@@ -1,9 +1,10 @@
-﻿import type { TranslationLanguage, TranslationSourceLanguage } from "@glimpse/shared";
+﻿import { TRANSLATION_LANGUAGE_OPTIONS, type TranslationLanguage, type TranslationSourceLanguage } from "@glimpse/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { SystemConfigService } from "../system-config/system-config.service";
 
-type TranslationProvider = "mock" | "baidu" | "baidu_cloud";
+type TranslationProvider = "mock" | "baidu" | "baidu_cloud" | "aliyun_qwen";
 
 type CachedTranslation = { value: string; expiresAt: number; lastUsedAt: number };
 
@@ -33,6 +34,14 @@ type BaiduCloudTranslateResponse = {
   dst?: string;
   error_code?: number | string;
   error_msg?: string;
+};
+
+type ChatCompletionResponse = {
+  choices?: Array<{ message?: { content?: string } }>;
+  output?: { text?: string };
+  text?: string;
+  error?: { message?: string };
+  message?: string;
 };
 
 const baiduLanguageCodes: Record<TranslationSourceLanguage, string> = {
@@ -90,13 +99,13 @@ export class TranslationService {
   private translationWindowStartedAt = 0;
   private translationWindowCount = 0;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, private readonly runtimeConfig: SystemConfigService) {}
 
   async translateText(text: string, from: TranslationSourceLanguage, to: TranslationLanguage) {
     const trimmed = text.trim();
     if (!trimmed || from === to || appearsToAlreadyBeTargetLanguage(trimmed, to)) return "";
 
-    const provider = this.config.get<TranslationProvider>("TRANSLATION_PROVIDER", "mock");
+    const provider = (await this.runtimeConfig.get("TRANSLATION_PROVIDER", this.config.get<string>("TRANSLATION_PROVIDER", "mock"))) as TranslationProvider;
     const cacheKey = this.translationCacheKey(provider, trimmed, from, to);
     const cached = this.getCachedTranslation(cacheKey);
     if (cached !== undefined) return cached;
@@ -115,7 +124,8 @@ export class TranslationService {
 
   private async translateWithProvider(provider: TranslationProvider, text: string, from: TranslationSourceLanguage, to: TranslationLanguage) {
     if (provider === "mock") return this.mockTranslate(text, to);
-    if (!this.consumeTranslationQuota()) return "";
+    if (!(await this.consumeTranslationQuota())) return "";
+    if (provider === "aliyun_qwen") return this.translateWithAliyunQwen(text, to);
     if (provider === "baidu_cloud") return this.translateWithBaiduCloud(text, from, to);
     return this.translateWithBaidu(text, from, to);
   }
@@ -149,8 +159,8 @@ export class TranslationService {
     for (const [key] of removable.slice(0, this.translationCache.size - maxEntries)) this.translationCache.delete(key);
   }
 
-  private consumeTranslationQuota() {
-    const maxPerMinute = Math.max(this.config.get<number>("TRANSLATION_MAX_REQUESTS_PER_MINUTE", 120), 1);
+  private async consumeTranslationQuota() {
+    const maxPerMinute = Math.max(await this.runtimeConfig.getNumber("TRANSLATION_MAX_REQUESTS_PER_MINUTE", this.config.get<number>("TRANSLATION_MAX_REQUESTS_PER_MINUTE", 120)), 1);
     const now = Date.now();
     if (now - this.translationWindowStartedAt >= 60_000) {
       this.translationWindowStartedAt = now;
@@ -167,8 +177,8 @@ export class TranslationService {
   }
 
   private async translateWithBaidu(text: string, from: TranslationSourceLanguage, to: TranslationLanguage) {
-    const appId = this.config.get<string>("BAIDU_TRANSLATE_APP_ID", "").trim();
-    const secret = this.config.get<string>("BAIDU_TRANSLATE_SECRET", "").trim();
+    const appId = (await this.runtimeConfig.get("BAIDU_TRANSLATE_APP_ID", this.config.get<string>("BAIDU_TRANSLATE_APP_ID", ""))).trim();
+    const secret = (await this.runtimeConfig.get("BAIDU_TRANSLATE_SECRET", this.config.get<string>("BAIDU_TRANSLATE_SECRET", ""))).trim();
     if (!appId || !secret) {
       this.logger.warn("Baidu translation is selected but credentials are not configured.");
       return "";
@@ -205,8 +215,8 @@ export class TranslationService {
   }
 
   private async translateWithBaiduCloud(text: string, from: TranslationSourceLanguage, to: TranslationLanguage) {
-    const apiKey = this.config.get<string>("BAIDU_TRANSLATE_API_KEY", "").trim();
-    const secretKey = this.config.get<string>("BAIDU_TRANSLATE_SECRET_KEY", "").trim();
+    const apiKey = (await this.runtimeConfig.get("BAIDU_TRANSLATE_API_KEY", this.config.get<string>("BAIDU_TRANSLATE_API_KEY", ""))).trim();
+    const secretKey = (await this.runtimeConfig.get("BAIDU_TRANSLATE_SECRET_KEY", this.config.get<string>("BAIDU_TRANSLATE_SECRET_KEY", ""))).trim();
     if (!apiKey || !secretKey) {
       this.logger.warn("Baidu Cloud translation is selected but API Key or Secret Key is not configured.");
       return "";
@@ -240,6 +250,49 @@ export class TranslationService {
     }
   }
 
+
+  private async translateWithAliyunQwen(text: string, to: TranslationLanguage) {
+    const apiKey = (await this.runtimeConfig.get("ALIYUN_DASHSCOPE_API_KEY", this.config.get<string>("ALIYUN_DASHSCOPE_API_KEY", ""))).trim();
+    if (!apiKey) {
+      this.logger.warn("Aliyun Qwen translation is selected but DashScope API Key is not configured.");
+      return "";
+    }
+    const baseUrl = this.normalizeBaseUrl(await this.runtimeConfig.get("ALIYUN_DASHSCOPE_BASE_URL", this.config.get<string>("ALIYUN_DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")));
+    const model = (await this.runtimeConfig.get("ALIYUN_TRANSLATE_MODEL", this.config.get<string>("ALIYUN_TRANSLATE_MODEL", "qwen3.7-plus"))).trim() || "qwen3.7-plus";
+    const target = TRANSLATION_LANGUAGE_OPTIONS.find((item) => item.code === to);
+    const targetName = target ? `${target.label} (${target.nativeLabel})` : to;
+
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        signal: AbortSignal.timeout(30_000),
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          messages: [
+            { role: "system", content: `Translate the user's text into ${targetName}. Preserve punctuation and line breaks. Return only the translated text. If the text is already in ${targetName}, return it unchanged.` },
+            { role: "user", content: text.trim() }
+          ]
+        })
+      });
+      const responseText = await response.text().catch(() => "");
+      const data = this.parseJsonResponse(responseText) as ChatCompletionResponse;
+      if (!response.ok) {
+        this.logger.warn(`Aliyun Qwen translation failed: ${response.status} ${data.error?.message ?? data.message ?? response.statusText}`);
+        return "";
+      }
+      const translated = this.extractChatText(data);
+      if (!translated) this.logger.warn("Aliyun Qwen translation returned empty text.");
+      return translated;
+    } catch (error) {
+      this.logger.warn("Aliyun Qwen translation request failed", error instanceof Error ? error.stack : String(error));
+      return "";
+    }
+  }
   private async getBaiduCloudAccessToken(apiKey: string, secretKey: string) {
     const now = Date.now();
     if (this.baiduCloudAccessToken && now < this.baiduCloudAccessTokenExpiresAt) {
@@ -275,7 +328,21 @@ export class TranslationService {
     }
     return data.result?.translated_text ?? data.translated_text ?? data.result?.dst ?? data.dst ?? "";
   }
+
+  private extractChatText(data: ChatCompletionResponse) {
+    return (data.choices?.[0]?.message?.content ?? data.output?.text ?? data.text ?? "").trim();
+  }
+
+  private parseJsonResponse(text: string) {
+    if (!text) return {};
+    try { return JSON.parse(text) as unknown; } catch { return { message: text }; }
+  }
+
+  private normalizeBaseUrl(value: string) {
+    return (value || "https://dashscope.aliyuncs.com/compatible-mode/v1").trim().replace(/\/+$/, "");
+  }
 }
+
 
 
 

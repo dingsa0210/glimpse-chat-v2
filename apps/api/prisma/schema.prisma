@@ -55,6 +55,7 @@ model User {
   profileSignature String?
   language     UserLanguage @default(ZH)
   role         UserRole @default(USER)
+  adminPermissions String[] @default([])
   disabledAt   DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -66,6 +67,7 @@ model User {
   blocksSent UserBlock[] @relation("BlocksSent")
   blocksReceived UserBlock[] @relation("BlocksReceived")
   feedbacks Feedback[]
+  favoriteMessages MessageFavorite[]
 }
 
 model FriendRequest {
@@ -147,6 +149,7 @@ model Message {
   conversation Conversation @relation(fields: [conversationId], references: [id])
   sender       User? @relation("SentMessages", fields: [senderId], references: [id])
   translations MessageTranslation[]
+  favorites MessageFavorite[]
 }
 
 model MessageTranslation {
@@ -159,6 +162,37 @@ model MessageTranslation {
   message Message @relation(fields: [messageId], references: [id])
 
   @@unique([messageId, language])
+}
+
+model MessageFavorite {
+  id        String   @id @default(cuid())
+  userId    String
+  messageId String?
+  createdAt DateTime @default(now())
+  tags      String[] @default([])
+
+  snapshotMessageId         String?
+  snapshotConversationId    String?
+  snapshotConversationTitle String?
+  snapshotConversationType  String?
+  snapshotSenderId          String?
+  snapshotSenderName        String?
+  snapshotType              String?
+  snapshotBody              String?
+  snapshotMediaUrl          String?
+  snapshotThumbnailUrl      String?
+  snapshotTranscript        String?
+  snapshotSourceLanguage    String?
+  snapshotTranslations      Json?
+  snapshotCreatedAt         DateTime?
+
+  user    User     @relation(fields: [userId], references: [id])
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, messageId])
+  @@index([messageId])
+  @@index([userId, createdAt])
+  @@index([userId])
 }
 
 model Feedback {
@@ -176,7 +210,12 @@ model Feedback {
   @@index([userId, createdAt])
   @@index([status, createdAt])
 }
-
-
-
-
+model SystemSetting {
+  key         String   @id
+  value       String?
+  sensitive   Boolean  @default(false)
+  description String?
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+}

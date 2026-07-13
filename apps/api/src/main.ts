@@ -32,6 +32,22 @@ function parseOrigins(value: string) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function isPrivateNetworkOrigin(origin: string) {
+  try {
+    const { hostname } = new URL(origin);
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname.startsWith("192.168.") ||
+      hostname.startsWith("10.") ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function createRateLimitMiddleware(maxRequests: number, windowMs: number) {
   const buckets = new Map<string, RateLimitState>();
   return (request: HttpRequest, response: HttpResponse, next: NextFunction) => {
@@ -73,7 +89,10 @@ async function bootstrap() {
   }
 
   app.enableCors({
-    origin: webOrigin === "*" ? true : origins,
+    origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
+      const allowed = !origin || webOrigin === "*" || origins.includes(origin) || isPrivateNetworkOrigin(origin);
+      callback(allowed ? null : new Error("Origin is not allowed by CORS."), allowed);
+    },
     credentials: true
   });
 

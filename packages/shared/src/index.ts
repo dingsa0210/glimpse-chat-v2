@@ -1,7 +1,18 @@
-export const GLIMPSE_CHAT_VERSION = "v32.56";
+﻿export const GLIMPSE_CHAT_VERSION = "v32.80";
 
 export type UserLanguage = "zh" | "en";
 export type UserRole = "user" | "admin";
+export type AdminPermission = "overview" | "users" | "user_chats" | "conversations" | "feedback" | "settings" | "admins";
+
+export const ADMIN_PERMISSION_OPTIONS: Array<{ code: AdminPermission; label: string; zhLabel: string }> = [
+  { code: "overview", label: "Dashboard overview", zhLabel: "后台概览" },
+  { code: "users", label: "User management", zhLabel: "用户管理" },
+  { code: "user_chats", label: "User chat history", zhLabel: "聊天记录查看" },
+  { code: "conversations", label: "Conversation list", zhLabel: "会话列表" },
+  { code: "feedback", label: "Feedback queue", zhLabel: "反馈处理" },
+  { code: "settings", label: "System settings", zhLabel: "系统配置" },
+  { code: "admins", label: "Administrator accounts", zhLabel: "管理员账户" }
+];
 
 export type TranslationLanguage =
   | "zh"
@@ -84,6 +95,7 @@ export interface PublicUser {
   signature?: string | null;
   language: UserLanguage;
   role?: UserRole;
+  adminPermissions?: AdminPermission[];
   online?: boolean;
 }
 
@@ -206,6 +218,24 @@ export interface CallSignalEvent extends CallSignalPayload {
   fromName?: string;
   createdAt: string;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

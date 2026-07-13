@@ -2,8 +2,8 @@
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import * as argon2 from "argon2";
-import { PrismaService } from "../prisma/prisma.service";
 import { MailService } from "../mail/mail.service";
+import { PrismaService } from "../prisma/prisma.service";
 import { VerificationService } from "../verification/verification.service";
 import type { AccessTokenPayload, AuthenticatedUser } from "./auth.types";
 import type { ChangePasswordDto, LoginDto, RegisterDto, SendCodeDto, UpdateProfileDto } from "./dto/auth.dto";
@@ -60,6 +60,7 @@ function toAuthenticatedUser(user: {
   profileSignature: string | null;
   language: string;
   role: string;
+  adminPermissions?: string[];
 }, adminEmails: Set<string>): AuthenticatedUser {
   return {
     id: user.id,
@@ -78,7 +79,8 @@ function toAuthenticatedUser(user: {
     bio: user.profileBio,
     signature: user.profileSignature,
     language: toLanguage(user.language),
-    role: toRole(user.role, user.email, adminEmails)
+    role: toRole(user.role, user.email, adminEmails),
+    adminPermissions: user.adminPermissions ?? []
   };
 }
 
@@ -95,7 +97,6 @@ export class AuthService {
 
   async sendVerificationCode(dto: SendCodeDto) {
     const email = dto.email.trim().toLowerCase();
-
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) throw new ConflictException("Email is already registered.");
 
@@ -110,17 +111,13 @@ export class AuthService {
     const code = this.verification.generateCode();
     await this.verification.saveCode(email, code);
     await this.mail.sendVerificationCode(email, code);
-
     return { ok: true };
   }
 
   async register(dto: RegisterDto) {
     const email = dto.email.trim().toLowerCase();
-
     const codeValid = await this.verification.verifyCode(email, dto.code);
-    if (!codeValid) {
-      throw new BadRequestException("Invalid or expired verification code.");
-    }
+    if (!codeValid) throw new BadRequestException("Invalid or expired verification code.");
 
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) throw new ConflictException("Email is already registered.");
@@ -173,6 +170,15 @@ export class AuthService {
       ...(dto.profileEmailPublic !== undefined ? { profileEmailPublic: dto.profileEmailPublic } : {}),
       ...(dto.profilePhonePublic !== undefined ? { profilePhonePublic: dto.profilePhonePublic } : {})
     };
+    if (dto.phone !== undefined) {
+      const nextPhone = cleanOptionalText(dto.phone);
+      if (nextPhone && nextPhone !== current.phone) {
+        const existingPhoneUser = await this.prisma.user.findUnique({ where: { phone: nextPhone } });
+        if (existingPhoneUser && existingPhoneUser.id !== userId) throw new ConflictException("Phone is already in use.");
+      }
+      data.phone = nextPhone;
+      if (!nextPhone) data.profilePhonePublic = false;
+    }
     if (dto.publicId !== undefined) {
       const nextPublicId = dto.publicId.trim().toLowerCase();
       if (!PUBLIC_ID_PATTERN.test(nextPublicId)) throw new BadRequestException("ID must be 3-32 characters and can only contain letters, numbers, dot, underscore, or hyphen.");
@@ -213,7 +219,7 @@ export class AuthService {
       });
       const user = await this.prisma.user.findUnique({
         where: { id: payload.sub },
-        select: { id: true, email: true, phone: true, publicId: true, publicIdUpdatedAt: true, profilePublic: true, profileEmailPublic: true, profilePhonePublic: true, nickname: true, avatarUrl: true, profileCompany: true, profileTitle: true, profileLocation: true, profileBio: true, profileSignature: true, language: true, role: true, disabledAt: true }
+        select: { id: true, email: true, phone: true, publicId: true, publicIdUpdatedAt: true, profilePublic: true, profileEmailPublic: true, profilePhonePublic: true, nickname: true, avatarUrl: true, profileCompany: true, profileTitle: true, profileLocation: true, profileBio: true, profileSignature: true, language: true, role: true, adminPermissions: true, disabledAt: true }
       });
       if (!user || user.disabledAt) throw new UnauthorizedException("Account is disabled.");
       return toAuthenticatedUser(user, parseAdminEmails(this.config.get<string>("ADMIN_EMAILS", "")));
@@ -263,7 +269,8 @@ export class AuthService {
       bio: user.bio,
       signature: user.signature,
       language: user.language,
-      role: user.role
+      role: user.role,
+      adminPermissions: user.adminPermissions ?? []
     };
     const accessToken = await this.jwt.signAsync(payload, {
       secret: this.config.get<string>("JWT_ACCESS_SECRET", "dev_access_secret_change_me"),
@@ -272,5 +279,7 @@ export class AuthService {
     return { accessToken, user };
   }
 }
+
+
 
 
