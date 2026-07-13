@@ -4,6 +4,29 @@
 
 ---
 
+## 12. 文件消息发送后对方看不到、刷新后消失
+
+**时间**：2026-07-13
+
+**现象**：用户发送文件后，对方或群组里看不到该文件消息；发送者刷新页面后文件也消失了。
+
+**根因**：两个独立 bug 叠加导致。
+
+**Bug 1 — 数据库 MessageType 枚举缺少 FILE 值（主因）**：
+Prisma schema 中定义了 `MessageType { TEXT, IMAGE, VIDEO, AUDIO, FILE }`，但迁移文件中只创建了 TEXT/IMAGE/VIDEO，后续仅添加了 AUDIO。`FILE` 从未被加入 PostgreSQL 枚举。保存文件消息时 Prisma 生成 `INSERT ... VALUES (... 'FILE'::"MessageType" ...)`，PostgreSQL 因枚举值不存在而直接报错。异常在 `saveMessage()` 中重新抛出，导致 `message:new` 广播从未执行，其他用户永远收不到；发送者刷新后乐观更新的本地状态也丢失。
+
+**Bug 2 — 环境变量名不匹配**：
+代码 `media.service.ts:61` 读取 `MEDIA_STORAGE_DIR`，但 `docker-compose.yml` 和 `.env.example` 中设置的是 `MEDIA_UPLOAD_DIR`，变量名不一致。Docker 中配置的上传目录 `/app/uploads`（持久卷）被忽略，文件落入容器内的默认非持久化目录，容器重启后已上传文件丢失。
+
+**修复**：
+1. 执行 `ALTER TYPE "MessageType" ADD VALUE IF NOT EXISTS 'FILE';` 在数据库中补齐枚举值
+2. 新增 Prisma 迁移文件 `migrations/20260713000000_add_file_message_type/migration.sql` 确保后续 `prisma migrate deploy` 不遗漏
+3. `docker-compose.yml` 和 `.env.example` 中 `MEDIA_UPLOAD_DIR` → `MEDIA_STORAGE_DIR`，统一变量名
+
+> ⚠️ **部署提醒**：如果在已有数据库上部署但尚未执行过该迁移，需手动执行上述 SQL 语句。非 Docker 环境下注意 `MEDIA_STORAGE_DIR` 应指向可写路径，或注释掉让代码使用默认值 `99_输出结果/glimpse-media-uploads/`。
+
+---
+
 ## 11. 群聊消息头像回退逻辑不合理
 
 **时间**：2026-07-11
