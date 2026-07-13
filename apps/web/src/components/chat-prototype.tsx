@@ -15,7 +15,7 @@ type MessageDisplayMode = "original" | "translated" | "bilingual";
 type SpeechAccent = "auto" | "en-IN" | "en-US" | "en-GB" | "zh-CN" | "zh-TW" | "hi-IN" | "ta-IN" | "te-IN" | "bn-IN" | "ar-SA" | "ur-PK" | "ja-JP" | "ko-KR";
 type PendingAutoTranslation = { message: MessagePayload; targetLanguage: TranslationLanguage };
 type ReplyDraft = { id: string; senderName?: string; type: MessagePayload["type"]; body?: string };
-type MediaPreview = { url: string; type: "image" | "video" | "audio" | "avatar"; name?: string; muted?: boolean };
+type MediaPreview = { url: string; type: "image" | "video" | "audio" | "avatar" | "pdf"; name?: string; muted?: boolean; downloadUrl?: string };
 type ArchivePreviewState = ArchivePreviewResponse & { loading?: boolean; error?: string };
 type PendingVoicePreview = { file: File; url: string; transcript: string; name: string };
 type MessageReminder = { id: string; conversationId: string; messageId: string; title: string; body: string; remindAt: string; done?: boolean };
@@ -182,6 +182,7 @@ const copy = {
     mediaUploadFailed: "媒体上传失败，请重试。",
     mediaOpen: "打开预览",
     mediaClose: "关闭预览",
+    pdfPreview: "预览 PDF",
     rotateLeft: "左旋",
     rotateRight: "右旋",
     videoFitAuto: "自动",
@@ -413,6 +414,7 @@ const copy = {
     mediaUploadFailed: "Media upload failed. Please try again.",
     mediaOpen: "Open preview",
     mediaClose: "Close preview",
+    pdfPreview: "Preview PDF",
     rotateLeft: "Rotate left",
     rotateRight: "Rotate right",
     videoFitAuto: "Auto",
@@ -772,11 +774,11 @@ function getApiUrl() {
 function normalizeMediaUrl(url: string | undefined) {
   if (!url || typeof window === "undefined") return url;
   try {
-    const parsed = new URL(url, window.location.origin);
-    if (parsed.pathname.startsWith("/media/") && isLocalNetworkHost(parsed.hostname)) {
-      return `${window.location.origin}${parsed.pathname}${parsed.search}`;
+    const api = new URL(getApiUrl(), window.location.origin);
+    const parsed = new URL(url, api);
+    if (parsed.pathname.startsWith("/media/") && (url.startsWith("/") || isLocalNetworkHost(parsed.hostname))) {
+      return `${api.origin}${parsed.pathname}${parsed.search}`;
     }
-    const api = new URL(getApiUrl());
     if (isLocalNetworkHost(parsed.hostname) && parsed.port === api.port) {
       parsed.protocol = api.protocol;
       parsed.hostname = api.hostname;
@@ -818,6 +820,11 @@ function mediaDownloadUrl(message: { mediaUrl?: string | null; body?: string | n
 function isZipArchive(message: { mediaUrl?: string | null; body?: string | null }) {
   const name = ((message.body || message.mediaUrl || "").split("?")[0] ?? "").toLowerCase();
   return name.endsWith(".zip");
+}
+
+function isPdfFile(message: { mediaUrl?: string | null; body?: string | null }) {
+  const name = ((message.body || message.mediaUrl || "").split("?")[0] ?? "").toLowerCase();
+  return name.endsWith(".pdf");
 }
 
 function archivePreviewPath(message: { mediaUrl?: string | null; body?: string | null }) {
@@ -5623,11 +5630,20 @@ export function ChatPrototype() {
                     ) : null}
                     {!message.revokedAt && message.mediaUrl && message.type === "file" ? (
                       <div className={`mt-2 max-w-[520px] rounded border p-3 text-sm ${mine ? "border-white/20 bg-white/10 text-white" : "border-line bg-paper text-ink"}`}>
-                        <a className="flex items-center gap-3" href={messageDownload} download={message.body ?? "download"} title={message.body ?? "File attachment"}>
-                          <FileText className="shrink-0" size={20} />
-                          <span className="min-w-0 flex-1 truncate">{message.body ?? "File attachment"}</span>
-                          <Download className="shrink-0" size={17} />
-                        </a>
+                        {isPdfFile(message) ? (
+                          <button className="flex w-full items-center gap-3 text-left" onClick={() => setPreviewMedia({ url: messageMediaUrl, type: "pdf", name: message.body, downloadUrl: messageDownload })} type="button" title={t.pdfPreview}>
+                            <FileText className="shrink-0" size={20} />
+                            <span className="min-w-0 flex-1 truncate">{message.body ?? "PDF"}</span>
+                            <span className={`shrink-0 text-xs font-medium ${mine ? "text-white/80" : "text-brand"}`}>{t.pdfPreview}</span>
+                          </button>
+                        ) : (
+                          <a className="flex items-center gap-3" href={messageDownload} download={message.body ?? "download"} title={message.body ?? "File attachment"}>
+                            <FileText className="shrink-0" size={20} />
+                            <span className="min-w-0 flex-1 truncate">{message.body ?? "File attachment"}</span>
+                            <Download className="shrink-0" size={17} />
+                          </a>
+                        )}
+                        {isPdfFile(message) ? <a className={`mt-2 inline-flex items-center gap-1 text-xs underline-offset-2 hover:underline ${mine ? "text-white/80" : "text-slate-500"}`} href={messageDownload} download={message.body ?? "download"}><Download size={13} />{t.downloadOriginal}</a> : null}
                         {isZipArchive(message) ? <button className={`mt-2 text-xs font-medium underline-offset-2 hover:underline ${mine ? "text-white/80" : "text-brand"}`} onClick={() => void openArchivePreview(message)} type="button">{uiLanguage === "zh" ? "预览压缩包" : "Preview archive"}</button> : null}
                       </div>
                     ) : null}
@@ -6075,9 +6091,10 @@ export function ChatPrototype() {
                   <button className="inline-flex items-center gap-1 rounded bg-white px-3 py-2 text-sm font-medium text-ink shadow-lg" onClick={(event) => { event.stopPropagation(); setPreviewRotation((value) => (value + 90) % 360); }} type="button" aria-label={t.rotateRight}><RotateCw size={16} />{t.rotateRight}</button>
                 </>
               ) : null}
+              {previewMedia.type === "pdf" && previewMedia.downloadUrl ? <a className="inline-flex items-center gap-1 rounded bg-white px-3 py-2 text-sm font-medium text-ink shadow-lg" href={previewMedia.downloadUrl} download={previewMedia.name ?? "download.pdf"} onClick={(event) => event.stopPropagation()}><Download size={16} />{t.downloadOriginal}</a> : null}
               <button className="rounded bg-white px-4 py-2 text-sm font-medium text-ink shadow-lg" onClick={(event) => { event.stopPropagation(); setPreviewMedia(null); }} type="button">{t.mediaClose}</button>
             </div>
-            <div className="max-h-full max-w-5xl" onClick={(event) => event.stopPropagation()}>
+            <div className={previewMedia.type === "pdf" ? "h-[calc(100vh-6rem)] w-[min(96vw,1200px)] pt-10" : "max-h-full max-w-5xl"} onClick={(event) => event.stopPropagation()}>
               {previewMedia.type === "image" || previewMedia.type === "avatar" ? <img className={`${previewRotationClass} rounded bg-black object-contain`} src={previewMedia.url} alt={previewMedia.name ?? "Image preview"} style={{ transform: `rotate(${previewRotation}deg)` }} /> : null}
               {previewMedia.type === "video" ? (
                 <video
@@ -6097,6 +6114,7 @@ export function ChatPrototype() {
                 />
               ) : null}
               {previewMedia.type === "audio" ? <div className="rounded bg-white p-4"><p className="mb-3 text-sm font-medium text-ink">{previewMedia.name ?? "Audio"}</p><audio className="w-full" src={previewMedia.url} controls autoPlay /></div> : null}
+              {previewMedia.type === "pdf" ? <iframe className="h-full w-full rounded bg-white shadow-2xl" src={previewMedia.url} title={previewMedia.name ?? "PDF preview"} /> : null}
             </div>
           </div>
         ) : null}      </div>
