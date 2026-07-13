@@ -1,7 +1,4 @@
-version: "3.9"
-
 services:
-  # ==================== PostgreSQL 数据库 ====================
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -19,7 +16,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ==================== Redis (可选，预留) ====================
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -33,7 +29,12 @@ services:
       timeout: 5s
       retries: 5
 
-  # ==================== API 服务 (NestJS) ====================
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+
   api:
     build:
       context: .
@@ -42,15 +43,26 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://glimpse:${DB_PASSWORD:-glimpse_secret_change_me}@db:5432/glimpse_chat
+      DATABASE_CONNECT_ON_START: "true"
+      CHAT_STORAGE: prisma
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change_me_to_a_random_64_char_string}
       JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-7d}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       PORT: 4100
-      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000,https://chat.glimpsetech.cn}
       REDIS_URL: redis://redis:6379
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_SECURE: "false"
+      SMTP_FROM: noreply@glimpse.local
+      MEDIA_STORAGE_DIR: /app/uploads
       MEDIA_UPLOAD_DIR: /app/uploads
       ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
       API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-120}
@@ -58,20 +70,20 @@ services:
     volumes:
       - uploads:/app/uploads
     ports:
-      - "127.0.0.1:4100:4100"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:4100:4100"
 
-  # ==================== Web 前端 (Next.js) ====================
   web:
     build:
       context: .
       dockerfile: Dockerfile.web
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_started
     environment:
       NODE_ENV: production
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
 
 volumes:
   pgdata:

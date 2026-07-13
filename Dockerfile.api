@@ -47,15 +47,14 @@ COPY --from=builder /build/package.json /build/pnpm-workspace.yaml /build/pnpm-l
 COPY --from=builder /build/apps/api/package.json apps/api/
 COPY --from=builder /build/packages/shared/package.json packages/shared/
 
-# 安装生产依赖
-RUN pnpm install --frozen-lockfile --prod
+# Prisma CLI is used both to generate the client below and to apply migrations
+# when the container starts, so keep the locked workspace toolchain available.
+RUN pnpm install --frozen-lockfile
 
 # 复制构建产物
 COPY --from=builder /build/apps/api/dist apps/api/dist
 COPY --from=builder /build/apps/api/prisma apps/api/prisma
 COPY --from=builder /build/apps/api/prisma.config.ts apps/api/
-COPY --from=builder /build/node_modules/.pnpm/@prisma+client* node_modules/.pnpm/ 2>/dev/null || true
-COPY --from=builder /build/node_modules/@prisma node_modules/@prisma 2>/dev/null || true
 COPY --from=builder /build/packages/shared/dist packages/shared/dist
 
 # 生成 Prisma Client（生产环境）

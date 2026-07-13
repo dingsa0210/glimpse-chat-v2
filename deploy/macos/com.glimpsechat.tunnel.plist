@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.glimpsechat.tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-NT</string>
+    <string>-i</string>
+    <string>/Users/a1/.ssh/id_ed25519_chat_tunnel</string>
+    <string>-o</string>
+    <string>BatchMode=yes</string>
+    <string>-o</string>
+    <string>IdentitiesOnly=yes</string>
+    <string>-o</string>
+    <string>ExitOnForwardFailure=yes</string>
+    <string>-o</string>
+    <string>ServerAliveInterval=30</string>
+    <string>-o</string>
+    <string>ServerAliveCountMax=3</string>
+    <string>-o</string>
+    <string>StrictHostKeyChecking=yes</string>
+    <string>-o</string>
+    <string>UserKnownHostsFile=/Users/a1/.ssh/known_hosts_chat_tunnel</string>
+    <string>-R</string>
+    <string>127.0.0.1:10080:127.0.0.1:3000</string>
+    <string>-R</string>
+    <string>127.0.0.1:10081:127.0.0.1:4100</string>
+    <string>tunnel@43.129.183.132</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/a1/Library/Logs/GlimpseChat/tunnel.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/a1/Library/Logs/GlimpseChat/tunnel.err.log</string>
+</dict>
+</plist>
