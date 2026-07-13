@@ -47,6 +47,10 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_started
+    # Load provider credentials and other runtime settings from the root .env.
+    # Network-specific values below take precedence inside the Compose network.
+    env_file:
+      - .env
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://glimpse:${DB_PASSWORD:-glimpse_secret_change_me}@db:5432/glimpse_chat
@@ -58,10 +62,12 @@ services:
       PORT: 4100
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000,https://chat.glimpsetech.cn}
       REDIS_URL: redis://redis:6379
-      SMTP_HOST: mailpit
-      SMTP_PORT: 1025
-      SMTP_SECURE: "false"
-      SMTP_FROM: noreply@glimpse.local
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@glimpse.local}
       MEDIA_STORAGE_DIR: /app/uploads
       MEDIA_UPLOAD_DIR: /app/uploads
       ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
