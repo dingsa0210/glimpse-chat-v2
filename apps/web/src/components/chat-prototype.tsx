@@ -3231,7 +3231,7 @@ export function ChatPrototype() {
         if (settled) return;
         settled = true;
         setMessageStatuses((current) => ({ ...current, [message.id]: "failed" }));
-        setNotice(t.requestTimeout);
+        setNotice(t.requestFailed);
       }, 8000);
 
       socketRef.current.emit("message:send", message, (response?: { ok?: boolean; messageId?: string; error?: string; message?: string }) => {

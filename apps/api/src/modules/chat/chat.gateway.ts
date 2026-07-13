@@ -53,7 +53,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     try {
       client.data.user = await this.auth.verifyAccessToken(token);
-      void client.join(`user:${client.data.user.id}`);
+      await client.join(`user:${client.data.user.id}`);
       this.markUserOnline(client.data.user.id);
       client.emit("presence:state", { onlineUserIds: Array.from(this.activeUserSockets.keys()) });
     } catch {
