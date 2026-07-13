@@ -51,7 +51,7 @@ services:
       PORT: 4100
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
       REDIS_URL: redis://redis:6379
-      MEDIA_UPLOAD_DIR: /app/uploads
+      MEDIA_STORAGE_DIR: /app/uploads
       ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
       API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-120}
       API_RATE_LIMIT_WINDOW_MS: ${API_RATE_LIMIT_WINDOW_MS:-60000}
