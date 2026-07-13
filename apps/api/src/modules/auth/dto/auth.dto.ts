@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
+﻿import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 
 export class SendCodeDto {
   @IsEmail()
@@ -58,6 +58,11 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(40)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(500)
   avatarUrl?: string;
 
@@ -98,3 +103,5 @@ export class UpdateProfileDto {
   @IsBoolean()
   profilePhonePublic?: boolean;
 }
+
+

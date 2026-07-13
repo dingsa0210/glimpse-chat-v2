@@ -1,8 +1,24 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { randomBytes } from "crypto";
 import * as argon2 from "argon2";
+import { ADMIN_PERMISSION_OPTIONS } from "@glimpse/shared";
 import { Prisma } from "@prisma/client";
+import type { AuthenticatedUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
+import { SystemConfigService } from "../system-config/system-config.service";
+
+type AdminPermissionCode = (typeof ADMIN_PERMISSION_OPTIONS)[number]["code"];
+const VALID_ADMIN_PERMISSION_CODES = new Set<string>(ADMIN_PERMISSION_OPTIONS.map((item) => item.code));
+
+function normalizeAdminPermissions(values: unknown): AdminPermissionCode[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(new Set(values.map((item) => String(item).trim()).filter((item) => VALID_ADMIN_PERMISSION_CODES.has(item)))) as AdminPermissionCode[];
+}
+
+function cleanAdminText(value: unknown) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
 
 const ADMIN_PASSWORD_HASH_OPTIONS: argon2.Options & { raw?: false } = {
   type: argon2.argon2id,
@@ -28,6 +44,7 @@ function toAdminUser(row: {
   profileSignature?: string | null;
   language: string;
   role: string;
+  adminPermissions?: string[];
   disabledAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -49,6 +66,7 @@ function toAdminUser(row: {
     profileSignature: row.profileSignature ?? null,
     language: row.language.toLowerCase(),
     role: row.role.toLowerCase(),
+    adminPermissions: row.adminPermissions ?? [],
     disabledAt: row.disabledAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
@@ -198,7 +216,7 @@ function toAdminFeedback(row: AdminFeedbackRow) {
 }
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly systemConfig: SystemConfigService) {}
 
   async overview() {
     const [users, disabledUsers, conversations, messages, openFeedback] = await Promise.all([
@@ -242,6 +260,7 @@ export class AdminService {
         profileBio: true, profileSignature: true, profilePublic: true, profileEmailPublic: true, profilePhonePublic: true, publicId: true,
         language: true,
         role: true,
+        adminPermissions: true,
         disabledAt: true,
         createdAt: true,
         updatedAt: true
@@ -312,6 +331,7 @@ export class AdminService {
         profileBio: true, profileSignature: true, profilePublic: true, profileEmailPublic: true, profilePhonePublic: true, publicId: true,
         language: true,
         role: true,
+        adminPermissions: true,
         disabledAt: true,
         createdAt: true,
         updatedAt: true
@@ -375,12 +395,82 @@ export class AdminService {
 
     return toAdminUser(user);
   }
+  assertPermission(actor: AuthenticatedUser, permission: AdminPermissionCode) {
+    if (actor.role !== "admin") throw new ForbiddenException("Admin access is required.");
+    const permissions = actor.adminPermissions ?? [];
+    if (permissions.length === 0 || permissions.includes(permission)) return;
+    throw new ForbiddenException("This administrator does not have permission for this action.");
+  }
+
+  async settings() {
+    return this.systemConfig.listForAdmin();
+  }
+
+  async updateSettings(items: Array<{ key?: string; value?: string | null }>, actorId: string) {
+    return this.systemConfig.updateFromAdmin(items, actorId);
+  }
+
+  async admins() {
+    const rows = await this.prisma.user.findMany({
+      where: { role: "ADMIN" },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        publicId: true,
+        profilePublic: true,
+        profileEmailPublic: true,
+        profilePhonePublic: true,
+        nickname: true,
+        avatarUrl: true,
+        profileCompany: true,
+        profileTitle: true,
+        profileLocation: true,
+        profileBio: true,
+        profileSignature: true,
+        language: true,
+        role: true,
+        adminPermissions: true,
+        disabledAt: true,
+        createdAt: true,
+        updatedAt: true
+      }
+    });
+    return rows.map(toAdminUser);
+  }
+
+  async createAdmin(dto: { email?: string | null; phone?: string | null; nickname?: string; password?: string; adminPermissions?: string[] }) {
+    const email = cleanAdminText(dto.email)?.toLowerCase() ?? null;
+    const phone = cleanAdminText(dto.phone) ?? null;
+    const nickname = cleanAdminText(dto.nickname) ?? email ?? phone ?? "Admin";
+    const password = String(dto.password ?? "");
+    if (!email && !phone) throw new BadRequestException("Email or phone is required.");
+    if (password.length < 8) throw new BadRequestException("Password must be at least 8 characters.");
+    const existing = await this.prisma.user.findFirst({ where: { OR: [email ? { email } : undefined, phone ? { phone } : undefined].filter(Boolean) as Prisma.UserWhereInput[] } });
+    if (existing) throw new ConflictException("Account already exists.");
+    const user = await this.prisma.user.create({
+      data: {
+        email,
+        phone,
+        nickname,
+        passwordHash: await argon2.hash(password, ADMIN_PASSWORD_HASH_OPTIONS),
+        language: "ZH",
+        role: "ADMIN",
+        adminPermissions: normalizeAdminPermissions(dto.adminPermissions)
+      }
+    });
+    const updated = await this.prisma.user.update({ where: { id: user.id }, data: { publicId: `u_${user.id.slice(0, 18).toLowerCase()}` } });
+    return toAdminUser(updated);
+  }
+
+  async updateAdminPermissions(userId: string, permissions: string[]) {
+    const existing = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!existing) throw new NotFoundException("User was not found.");
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { role: "ADMIN", adminPermissions: normalizeAdminPermissions(permissions) }
+    });
+    return toAdminUser(user);
+  }
 }
-
-
-
-
-
-
-
-

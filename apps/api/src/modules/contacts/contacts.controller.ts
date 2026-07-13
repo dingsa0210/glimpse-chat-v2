@@ -4,6 +4,8 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import type { AuthenticatedUser } from "../auth/auth.types";
 import { ChatStorageService } from "../chat/chat-storage.service";
 import { TranslationService } from "../translation/translation.service";
+import { MediaService } from "../media/media.service";
+import { VoiceTranscriptionService } from "../voice/voice-transcription.service";
 import { ContactsService } from "./contacts.service";
 import { CreateDirectConversationDto, CreateFriendRequestDto, CreateGroupConversationDto, InviteGroupMembersDto, TranslateMessageDto, UpdateGroupProfileDto } from "./dto/contacts.dto";
 
@@ -13,8 +15,15 @@ export class ContactsController {
   constructor(
     private readonly contacts: ContactsService,
     private readonly chatStorage: ChatStorageService,
-    private readonly translation: TranslationService
+    private readonly translation: TranslationService,
+    private readonly media: MediaService,
+    private readonly voice: VoiceTranscriptionService
   ) {}
+
+  @Get("search/global")
+  async globalSearch(@CurrentUser() user: AuthenticatedUser, @Query("q") query = "") {
+    return this.contacts.globalSearch(user.id, query);
+  }
 
   @Get("contacts/search")
   async search(@CurrentUser() user: AuthenticatedUser, @Query("q") query = "") {
@@ -107,6 +116,15 @@ export class ContactsController {
       message: await this.chatStorage.translateMessage(conversationId, messageId, user.id, dto.targetLanguage, this.translation)
     };
   }
+  @Post("conversations/:conversationId/messages/:messageId/transcribe")
+  async transcribeVoiceMessage(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("conversationId") conversationId: string,
+    @Param("messageId") messageId: string,
+    @Body() dto: TranslateMessageDto
+  ) {
+    return { message: await this.chatStorage.transcribeVoiceMessage(conversationId, messageId, user.id, dto.targetLanguage, this.media, this.voice) };
+  }
   @Get("conversations/:conversationId/members")
   async groupMembers(@CurrentUser() user: AuthenticatedUser, @Param("conversationId") conversationId: string) {
     return { members: await this.contacts.listGroupMembers(user.id, conversationId) };
@@ -135,6 +153,7 @@ export class ContactsController {
     return { conversation: await this.contacts.createDirectConversation(user.id, dto.userId) };
   }
 }
+
 
 
 

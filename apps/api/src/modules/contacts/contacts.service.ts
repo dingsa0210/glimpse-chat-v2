@@ -1,5 +1,5 @@
 ﻿import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import type { ConversationSummary, GroupMemberSummary, PublicUser } from "@glimpse/shared";
+import type { ConversationSummary, GroupMemberSummary, MessagePayload, PublicUser } from "@glimpse/shared";
 import type { Conversation } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../prisma/prisma.service";
@@ -165,6 +165,112 @@ export class ContactsService {
     return users.map(toPublicUser);
   }
 
+
+  async globalSearch(currentUserId: string, query: string) {
+    const keyword = query.trim();
+    if (keyword.length < 2) return { results: [] };
+    const memberships = await this.prisma.conversationMember.findMany({ where: { userId: currentUserId }, select: { conversationId: true } });
+    const conversationIds = memberships.map((item) => item.conversationId);
+    const results: Array<Record<string, unknown>> = [];
+    const seen = new Set<string>();
+    const push = (item: Record<string, unknown> & { id: string }) => {
+      if (seen.has(item.id)) return;
+      seen.add(item.id);
+      results.push(item);
+    };
+
+    if (conversationIds.length) {
+      const conversations = await this.prisma.conversation.findMany({
+        where: { id: { in: conversationIds } },
+        include: { members: { include: { user: true } }, messages: { orderBy: { createdAt: "desc" }, take: 1 } },
+        take: 50
+      });
+      for (const conversation of conversations) {
+        const other = conversation.members.find((member) => member.userId !== currentUserId)?.user;
+        const title = conversation.type === "DIRECT" ? other?.nickname ?? conversation.title ?? "Direct chat" : conversation.title ?? "Group chat";
+        const latest = conversation.messages[0];
+        const haystack = [title, latest?.body].filter(Boolean).join(" ").toLowerCase();
+        if (haystack.includes(keyword.toLowerCase())) {
+          push({ id: `conversation-${conversation.id}`, kind: "conversation", title, subtitle: latest?.body ?? "", conversationId: conversation.id, avatarUrl: conversation.type === "DIRECT" ? other?.avatarUrl : conversation.avatarUrl, avatarKind: conversation.type === "GROUP" ? "group" : "user" });
+        }
+      }
+
+      const messages = await this.prisma.message.findMany({
+        where: {
+          conversationId: { in: conversationIds },
+          OR: [
+            { body: { contains: keyword, mode: "insensitive" } },
+            { transcript: { contains: keyword, mode: "insensitive" } },
+            { senderName: { contains: keyword, mode: "insensitive" } },
+            { translations: { some: { body: { contains: keyword, mode: "insensitive" } } } }
+          ]
+        },
+        include: { translations: true, conversation: { select: { id: true, title: true, type: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 30
+      });
+      for (const message of messages) {
+        push({ id: `message-${message.id}`, kind: "message", title: message.conversation.title ?? "Chat message", subtitle: message.body ?? message.transcript ?? `[${message.type.toLowerCase()}]`, conversationId: message.conversationId, messageId: message.id, message: this.toMessagePayload(message), avatarKind: message.conversation.type === "GROUP" ? "group" : "user" });
+      }
+    }
+
+    const contacts = await this.searchUsers(currentUserId, keyword);
+    for (const user of contacts) {
+      push({ id: `contact-${user.id}`, kind: "contact", title: user.nickname, subtitle: user.email ?? user.phone ?? user.publicId ?? user.id, user, avatarUrl: user.avatarUrl, avatarKind: "user" });
+    }
+
+    const favorites = await this.prisma.messageFavorite.findMany({
+      where: { userId: currentUserId },
+      include: { message: { include: { translations: true, conversation: { select: { id: true, title: true, type: true } } } } },
+      orderBy: { createdAt: "desc" },
+      take: 100
+    });
+    for (const favorite of favorites) {
+      const tags = favorite.tags ?? [];
+      const body = favorite.message?.body ?? favorite.snapshotBody ?? favorite.snapshotTranscript ?? "";
+      const title = favorite.message?.conversation?.title ?? favorite.snapshotConversationTitle ?? "Favorite";
+      const haystack = [title, body, favorite.snapshotSenderName, ...tags].filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(keyword.toLowerCase())) continue;
+      const message = favorite.message ? this.toMessagePayload(favorite.message) : {
+        id: favorite.snapshotMessageId ?? favorite.id,
+        conversationId: favorite.snapshotConversationId ?? favorite.id,
+        senderId: favorite.snapshotSenderId ?? "unknown",
+        senderName: favorite.snapshotSenderName ?? undefined,
+        type: (favorite.snapshotType ?? "TEXT").toLowerCase() as MessagePayload["type"],
+        body: favorite.snapshotBody ?? undefined,
+        mediaUrl: favorite.snapshotMediaUrl ?? undefined,
+        thumbnailUrl: favorite.snapshotThumbnailUrl ?? undefined,
+        transcript: favorite.snapshotTranscript ?? undefined,
+        translations: favorite.snapshotTranslations && typeof favorite.snapshotTranslations === "object" && !Array.isArray(favorite.snapshotTranslations) ? favorite.snapshotTranslations as MessagePayload["translations"] : {},
+        createdAt: (favorite.snapshotCreatedAt ?? favorite.createdAt).toISOString()
+      };
+      push({ id: `favorite-${favorite.id}`, kind: "favorite", title, subtitle: `${tags.length ? `#${tags.join(" #")} · ` : ""}${body}`, conversationId: message.conversationId, messageId: message.id, favorite: { id: favorite.id, createdAt: favorite.createdAt.toISOString(), tags, message, conversation: { id: message.conversationId, title, type: favorite.snapshotConversationType ?? favorite.message?.conversation?.type } }, avatarKind: "group" });
+    }
+
+    return { results: results.slice(0, 80) };
+  }
+
+  private toMessagePayload(message: { id: string; conversationId: string; senderId: string; senderName: string | null; type: string; body: string | null; mediaUrl: string | null; mediaThumbnailUrl: string | null; transcript: string | null; revokedAt?: Date | null; replyToMessageId?: string | null; replyToMessageSenderName?: string | null; replyToMessageType?: string | null; replyToMessageBody?: string | null; sourceLanguage: string | null; createdAt: Date; translations: Array<{ language: string; body: string }> }): MessagePayload {
+    return {
+      id: message.id,
+      conversationId: message.conversationId,
+      senderId: message.senderId,
+      senderName: message.senderName ?? undefined,
+      type: message.type.toLowerCase() as MessagePayload["type"],
+      body: message.body ?? undefined,
+      mediaUrl: message.mediaUrl ?? undefined,
+      thumbnailUrl: message.mediaThumbnailUrl ?? undefined,
+      transcript: message.transcript ?? undefined,
+      revokedAt: message.revokedAt?.toISOString() ?? undefined,
+      replyToMessageId: message.replyToMessageId ?? undefined,
+      replyToMessageSenderName: message.replyToMessageSenderName ?? undefined,
+      replyToMessageType: message.replyToMessageType ? (message.replyToMessageType.toLowerCase() as MessagePayload["type"]) : undefined,
+      replyToMessageBody: message.replyToMessageBody ?? undefined,
+      sourceLanguage: message.sourceLanguage ? (message.sourceLanguage.toLowerCase() as MessagePayload["sourceLanguage"]) : undefined,
+      translations: Object.fromEntries(message.translations.map((item) => [item.language.toLowerCase(), item.body])),
+      createdAt: message.createdAt.toISOString()
+    };
+  }
   async listConversations(userId: string): Promise<ConversationSummary[]> {
     const memberships = await this.prisma.conversationMember.findMany({
       where: { userId },
@@ -336,6 +442,8 @@ export class ContactsService {
   }
   async listFriends(currentUserId: string) {
     const byId = new Map<string, ReturnType<typeof toPublicUser>>();
+    const self = await this.prisma.user.findUnique({ where: { id: currentUserId } });
+    if (self) byId.set(self.id, toPublicUser(self));
     const requests = await this.prisma.friendRequest.findMany({
       where: {
         status: "ACCEPTED",
@@ -369,7 +477,10 @@ export class ContactsService {
       byId.set(user.id, user);
     }
 
-    return Array.from(byId.values());
+    const values = Array.from(byId.values());
+    const selfIndex = values.findIndex((user) => user.id === currentUserId);
+    if (selfIndex > 0) values.unshift(...values.splice(selfIndex, 1));
+    return values;
   }
   async createGroupConversation(currentUserId: string, title: string, userIds: string[]): Promise<ConversationSummary> {
     const memberIds = Array.from(new Set(userIds.filter((id) => id && id !== currentUserId)));
@@ -543,11 +654,11 @@ export class ContactsService {
     return { ok: true };
   }
   async createDirectConversation(currentUserId: string, otherUserId: string): Promise<ConversationSummary> {
-    if (currentUserId === otherUserId) throw new BadRequestException("Cannot create a direct conversation with yourself.");
+    const isSelfConversation = currentUserId === otherUserId;
     const other = await this.prisma.user.findUnique({ where: { id: otherUserId } });
     if (!other) throw new NotFoundException("User was not found.");
 
-    await this.ensureNotBlocked(currentUserId, otherUserId);
+    if (!isSelfConversation) await this.ensureNotBlocked(currentUserId, otherUserId);
     const id = directConversationId(currentUserId, otherUserId);
     const conversation = await this.prisma.conversation.upsert({
       where: { id },
@@ -555,9 +666,9 @@ export class ContactsService {
       create: {
         id,
         type: "DIRECT",
-        title: other.nickname,
+        title: isSelfConversation ? `${other.nickname} (Me)` : other.nickname,
         members: {
-          create: [{ userId: currentUserId, lastReadAt: new Date() }, { userId: otherUserId }]
+          create: isSelfConversation ? [{ userId: currentUserId, lastReadAt: new Date() }] : [{ userId: currentUserId, lastReadAt: new Date() }, { userId: otherUserId }]
         }
       },
       include: {
@@ -570,7 +681,7 @@ export class ContactsService {
     return {
       id: conversation.id,
       type: "direct",
-      title: other.nickname,
+      title: isSelfConversation ? `${other.nickname} (Me)` : other.nickname,
       avatarUrl: other.avatarUrl ?? undefined,
       otherUser: toPublicUser(other),
       latestMessage: latest?.body ?? undefined,
@@ -579,6 +690,12 @@ export class ContactsService {
     };
   }
 }
+
+
+
+
+
+
 
 
 

@@ -1,8 +1,8 @@
 ﻿"use client";
 
-import { GLIMPSE_CHAT_VERSION, MEDIA_LIMITS, TRANSLATION_LANGUAGE_OPTIONS, type ArchivePreviewResponse, type AuthResponse, type CallMediaKind, type CallSignalEvent, type CallSignalPayload, type ConversationHistoryResponse, type ConversationSummary, type GroupMemberSummary, type MessagePayload, type PublicUser, type TranslationLanguage, type UploadedMediaResponse, type UserLanguage } from "@glimpse/shared";
+import { ADMIN_PERMISSION_OPTIONS, GLIMPSE_CHAT_VERSION, MEDIA_LIMITS, TRANSLATION_LANGUAGE_OPTIONS, type AdminPermission, type ArchivePreviewResponse, type AuthResponse, type CallMediaKind, type CallSignalEvent, type CallSignalPayload, type ConversationHistoryResponse, type ConversationSummary, type GroupMemberSummary, type MessagePayload, type PublicUser, type TranslationLanguage, type UploadedMediaResponse, type UserLanguage } from "@glimpse/shared";
 import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Ban, Bell, Check, CheckCheck, Copy, Globe2, Download, FileText, Languages, MapPin, Maximize2, MessageCircle, Mic, MicOff, Minimize2, Music2, Paperclip, Phone, PhoneOff, Plus, Navigation, RefreshCw, Reply, RotateCcw, RotateCw, Search, Send, Settings, UserPlus, Users, Video, VideoOff, Volume2 } from "lucide-react";
+import { ArrowLeft, Ban, Bell, Check, CheckCheck, Copy, Globe2, Download, FileText, Languages, MapPin, Maximize2, MessageCircle, Mic, MicOff, Minimize2, Music2, Paperclip, Phone, PhoneOff, Plus, Navigation, RefreshCw, Reply, RotateCcw, RotateCw, Search, Send, Settings, Star, UserPlus, Users, Video, VideoOff, Volume2 } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
 type Tab = "chats" | "contacts" | "me";
@@ -17,8 +17,10 @@ type PendingAutoTranslation = { message: MessagePayload; targetLanguage: Transla
 type ReplyDraft = { id: string; senderName?: string; type: MessagePayload["type"]; body?: string };
 type MediaPreview = { url: string; type: "image" | "video" | "audio" | "avatar"; name?: string; muted?: boolean };
 type ArchivePreviewState = ArchivePreviewResponse & { loading?: boolean; error?: string };
-type PendingVoicePreview = { file: File; url: string; transcript: string; name: string };
+type PendingVoicePreview = { file: File; url: string; name: string };
 type MessageReminder = { id: string; conversationId: string; messageId: string; title: string; body: string; remindAt: string; done?: boolean };
+type FavoriteMessageView = { id: string; createdAt: string; tags?: string[]; message: MessagePayload; conversation?: { id: string; title?: string | null; type?: string } };
+type GlobalSearchResult = { id: string; kind: "conversation" | "contact" | "message" | "favorite"; title: string; subtitle: string; conversationId?: string; messageId?: string; message?: MessagePayload; user?: SearchUser; favorite?: FavoriteMessageView; avatarUrl?: string | null; avatarKind?: "user" | "group" };
 type LocationMessagePayload = { latitude: number; longitude: number; name?: string; address?: string };
 type MediaLibraryFilter = "all" | "image" | "video" | "audio" | "file";
 type MessageSearchType = "all" | "text" | "image" | "video" | "audio" | "file";
@@ -29,23 +31,6 @@ type IncomingCall = { callId: string; conversationId: string; media: CallMediaKi
 type RemoteCallStream = { userId: string; name: string; stream: MediaStream; media: CallMediaKind; cameraOff?: boolean };
 type CameraFacingMode = "user" | "environment";
 type CallTileView = { id: string; name: string; stream: MediaStream | null; muted: boolean; videoEnabled: boolean; avatarUrl?: string | null; isLocal?: boolean };
-type BrowserSpeechRecognition = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  onresult: ((event: { results: ArrayLike<{ 0?: { transcript?: string }; isFinal?: boolean }> }) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
-
-type WindowWithSpeechRecognition = Window & {
-  SpeechRecognition?: BrowserSpeechRecognitionConstructor;
-  webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
-};
-
 const LOCATION_MESSAGE_PREFIX = "glimpse-location:v1:";
 
 type Conversation = {
@@ -757,7 +742,18 @@ function getConfiguredPublicUrl(value?: string) {
   }
   const normalized = normalizeBaseUrl(trimmed);
   if (typeof window === "undefined") return normalized;
-  if (isLocalNetworkHost(window.location.hostname)) return normalized;
+  if (isLocalNetworkHost(window.location.hostname)) {
+    try {
+      const configured = new URL(normalized);
+      if (localHostnames.has(configured.hostname) && !localHostnames.has(window.location.hostname)) {
+        configured.hostname = window.location.hostname;
+        return normalizeBaseUrl(configured.toString());
+      }
+    } catch {
+      return normalized;
+    }
+    return normalized;
+  }
   return isLocalNetworkUrl(normalized) ? "" : normalized;
 }
 
@@ -765,8 +761,8 @@ function getApiUrl() {
   const configured = getConfiguredPublicUrl(process.env.NEXT_PUBLIC_API_URL);
   if (configured) return configured;
   if (typeof window === "undefined") return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
-  if (window.location.protocol === "https:" && window.location.port === "3443") return window.location.origin;
   if (localHostnames.has(window.location.hostname)) return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
+  if (isLocalNetworkHost(window.location.hostname)) return `${window.location.protocol}//${window.location.hostname}:4100`;
   return window.location.origin;
 }
 function normalizeMediaUrl(url: string | undefined) {
@@ -774,7 +770,8 @@ function normalizeMediaUrl(url: string | undefined) {
   try {
     const parsed = new URL(url, window.location.origin);
     if (parsed.pathname.startsWith("/media/") && isLocalNetworkHost(parsed.hostname)) {
-      return `${window.location.origin}${parsed.pathname}${parsed.search}`;
+      const api = new URL(getApiUrl());
+      return `${api.origin}${parsed.pathname}${parsed.search}`;
     }
     const api = new URL(getApiUrl());
     if (isLocalNetworkHost(parsed.hostname) && parsed.port === api.port) {
@@ -931,8 +928,8 @@ function getSocketUrl() {
   const configured = getConfiguredPublicUrl(process.env.NEXT_PUBLIC_SOCKET_URL);
   if (configured) return configured;
   if (typeof window === "undefined") return process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4100";
-  if (window.location.protocol === "https:" && window.location.port === "3443") return window.location.origin;
   if (localHostnames.has(window.location.hostname)) return process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4100";
+  if (isLocalNetworkHost(window.location.hostname)) return `${window.location.protocol}//${window.location.hostname}:4100`;
   return window.location.origin;
 }
 
@@ -1290,6 +1287,25 @@ const speechAccentOptions: Array<{ code: SpeechAccent; label: string }> = [
   { code: "ja-JP", label: "Japanese" },
   { code: "ko-KR", label: "Korean" }
 ];
+type AdminSettingRow = {
+  key: string;
+  label: string;
+  group: string;
+  description: string;
+  value: string;
+  maskedValue?: string;
+  hasValue: boolean;
+  sensitive?: boolean;
+  restartRequired?: boolean;
+  bootstrapOnly?: boolean;
+  source: string;
+  updatedAt?: string | null;
+  activeOptionLabel?: string | null;
+  options?: Array<{ value: string; label: string; description?: string }>;
+};
+
+type TtsRuntimeConfig = { provider: "browser" | "doubao" | string; doubao: { voiceType: string; voices: Array<{ value: string; label: string; description?: string }> } };
+
 type AdminOverview = {
   users: number;
   disabledUsers: number;
@@ -1316,6 +1332,7 @@ type AdminUserRow = {
   profileSignature?: string | null;
   language: string;
   role: string;
+  adminPermissions?: string[];
   disabledAt?: string | null;
   createdAt: string;
   updatedAt?: string;
@@ -1467,6 +1484,13 @@ export function ChatPrototype() {
   const [mobilePane, setMobilePane] = useState<MobilePane>("list");
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [welcomeDismissed, setWelcomeDismissed] = useState(false);
+  const [ttsConfig, setTtsConfig] = useState<TtsRuntimeConfig>({ provider: "browser", doubao: { voiceType: "", voices: [] } });
+  const [ttsConfigLoading, setTtsConfigLoading] = useState(false);
+  const [ttsConfigNotice, setTtsConfigNotice] = useState("");
+  const [doubaoVoiceType, setDoubaoVoiceType] = useState("");
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<TranslationLanguage>(() => {
     if (typeof window === "undefined") return "zh";
     const stored = window.localStorage.getItem("glimpse.translationTargetLanguage");
@@ -1498,7 +1522,9 @@ export function ChatPrototype() {
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem("glimpse.notificationVibrationEnabled") !== "false";
   });
-  const [query, setQuery] = useState("");
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [contactQuery, setContactQuery] = useState("");
+  const [serverGlobalSearchResults, setServerGlobalSearchResults] = useState<GlobalSearchResult[]>([]);
   const [selectedId, setSelectedId] = useState(defaultConversation.id);
   const [pendingShortcutConversationId, setPendingShortcutConversationId] = useState(() => {
     if (typeof window === "undefined") return "";
@@ -1520,8 +1546,8 @@ export function ChatPrototype() {
   const [locationLongitude, setLocationLongitude] = useState("");
   const [locationLoading, setLocationLoading] = useState(false);
   const [voiceRecording, setVoiceRecording] = useState(false);
-  const [voiceTranscriptDraft, setVoiceTranscriptDraft] = useState("");
   const [visibleTranscriptIds, setVisibleTranscriptIds] = useState<Set<string>>(() => new Set());
+  const [voiceTranscriptionLoading, setVoiceTranscriptionLoading] = useState<Record<string, boolean>>({});
   const [pendingVoicePreview, setPendingVoicePreview] = useState<PendingVoicePreview | null>(null);
   const [failedMediaFile, setFailedMediaFile] = useState<File | null>(null);
   const [previewMedia, setPreviewMedia] = useState<MediaPreview | null>(null);
@@ -1535,9 +1561,15 @@ export function ChatPrototype() {
   const [archivePreview, setArchivePreview] = useState<ArchivePreviewState | null>(null);
   const [messageSearchQuery, setMessageSearchQuery] = useState("");
   const [messageReminders, setMessageReminders] = useState<MessageReminder[]>([]);
+  const [favoriteMessages, setFavoriteMessages] = useState<FavoriteMessageView[]>([]);
+  const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [favoritesLoading, setFavoritesLoading] = useState(false);
+  const [favoriteSearchQuery, setFavoriteSearchQuery] = useState("");
   const [messageSelectMode, setMessageSelectMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
+  const [favoriteMessageIds, setFavoriteMessageIds] = useState<Set<string>>(() => new Set());
   const [forwardMessages, setForwardMessages] = useState<MessagePayload[]>([]);
+  const [forwardMode, setForwardMode] = useState<'normal' | 'merged'>('normal');
   const [messageSearchType, setMessageSearchType] = useState<MessageSearchType>("all");
   const [messageSearchDate, setMessageSearchDate] = useState("");
   const [conversationMenu, setConversationMenu] = useState<{ conversationId: string; x: number; y: number } | null>(null);
@@ -1569,6 +1601,7 @@ export function ChatPrototype() {
   const [profileEmailPublic, setProfileEmailPublic] = useState(false);
   const [profilePhonePublic, setProfilePhonePublic] = useState(false);
   const [profileNicknameValue, setProfileNicknameValue] = useState("");
+  const [profilePhoneValue, setProfilePhoneValue] = useState("");
   const [profileAvatarUrl, setProfileAvatarUrl] = useState("");
   const [profileAvatarPreviewUrl, setProfileAvatarPreviewUrl] = useState("");
   const [profileCompany, setProfileCompany] = useState("");
@@ -1599,6 +1632,13 @@ export function ChatPrototype() {
   const [adminUsers, setAdminUsers] = useState<AdminUserRow[]>([]);
   const [adminConversations, setAdminConversations] = useState<AdminConversationRow[]>([]);
   const [adminFeedback, setAdminFeedback] = useState<AdminFeedbackRow[]>([]);
+  const [adminSettings, setAdminSettings] = useState<AdminSettingRow[]>([]);
+  const [adminSettingDrafts, setAdminSettingDrafts] = useState<Record<string, string>>({});
+  const [adminSettingsSaving, setAdminSettingsSaving] = useState(false);
+  const [adminSettingsNotice, setAdminSettingsNotice] = useState("");
+  const [adminAccounts, setAdminAccounts] = useState<AdminUserRow[]>([]);
+  const [adminAccountForm, setAdminAccountForm] = useState({ email: "", phone: "", nickname: "", password: "", adminPermissions: ADMIN_PERMISSION_OPTIONS.map((item) => item.code) });
+  const [adminAccountSaving, setAdminAccountSaving] = useState(false);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [adminActionUserId, setAdminActionUserId] = useState("");
@@ -1649,6 +1689,7 @@ export function ChatPrototype() {
   const [groupAvatarUploading, setGroupAvatarUploading] = useState(false);
   const [blockedUsers, setBlockedUsers] = useState<BlockedUserView[]>([]);
   const [friendDataLoading, setFriendDataLoading] = useState(false);
+  const [friendDataError, setFriendDataError] = useState("");
   const [contactsLoading, setContactsLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [conversationsLoading, setConversationsLoading] = useState(false);
@@ -1664,8 +1705,6 @@ export function ChatPrototype() {
   const voiceRecorderRef = useRef<MediaRecorder | null>(null);
   const voiceChunksRef = useRef<BlobPart[]>([]);
   const voiceStreamRef = useRef<MediaStream | null>(null);
-  const voiceRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
-  const voiceTranscriptDraftRef = useRef("");
   const groupAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const feedbackFileInputRef = useRef<HTMLInputElement | null>(null);
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1680,13 +1719,13 @@ export function ChatPrototype() {
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(""), 3000);
+    const timer = window.setTimeout(() => setNotice(""), 8000);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
   useEffect(() => {
     if (!profileNotice) return;
-    const timer = window.setTimeout(() => setProfileNotice(""), 3000);
+    const timer = window.setTimeout(() => setProfileNotice(""), 8000);
     return () => window.clearTimeout(timer);
   }, [profileNotice]);
   useEffect(() => {
@@ -1730,8 +1769,6 @@ export function ChatPrototype() {
   const callPipSuppressClickRef = useRef(false);
   const conversationLongPressTimerRef = useRef<number | null>(null);
   const conversationLongPressTriggeredRef = useRef(false);
-  const titleClickTimerRef = useRef<number | null>(null);
-  const titleClickCountRef = useRef(0);
   const videoPreviewLongPressTimerRef = useRef<number | null>(null);
   const videoPreviewLongPressTriggeredRef = useRef(false);
   const messageLongPressTimerRef = useRef<number | null>(null);
@@ -1751,12 +1788,12 @@ export function ChatPrototype() {
     { key: "file", label: t.mediaDocs }
   ];
   const messageSearchTypes: Array<{ key: MessageSearchType; label: string }> = [
-    { key: "all", label: uiLanguage === "zh" ? "??" : "All" },
-    { key: "text", label: uiLanguage === "zh" ? "??" : "Text" },
-    { key: "image", label: uiLanguage === "zh" ? "??" : "Images" },
-    { key: "video", label: uiLanguage === "zh" ? "??" : "Videos" },
-    { key: "audio", label: uiLanguage === "zh" ? "??" : "Audio" },
-    { key: "file", label: uiLanguage === "zh" ? "??" : "Files" }
+    { key: "all", label: uiLanguage === "zh" ? "全部" : "All" },
+    { key: "text", label: uiLanguage === "zh" ? "文字" : "Text" },
+    { key: "image", label: uiLanguage === "zh" ? "图片" : "Images" },
+    { key: "video", label: uiLanguage === "zh" ? "视频" : "Videos" },
+    { key: "audio", label: uiLanguage === "zh" ? "语音" : "Audio" },
+    { key: "file", label: uiLanguage === "zh" ? "文件" : "Files" }
   ];
   const messageSearchActive = Boolean(messageSearchQuery.trim() || messageSearchDate || messageSearchType !== "all");
   const messageSearchResults = useMemo(() => {
@@ -1774,6 +1811,15 @@ export function ChatPrototype() {
       .slice(-30)
       .reverse();
   }, [currentMessages, messageSearchDate, messageSearchQuery, messageSearchType]);
+  const filteredFavoriteMessages = useMemo(() => {
+    const keyword = favoriteSearchQuery.trim().toLowerCase();
+    if (!keyword) return favoriteMessages;
+    return favoriteMessages.filter((item) => {
+      const tags = item.tags ?? [];
+      const haystack = [item.conversation?.title, item.message.senderName, mediaPreviewLabel(item.message), item.message.transcript, ...tags].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(keyword);
+    });
+  }, [favoriteMessages, favoriteSearchQuery]);
   const selectedExists = conversations.some((item) => item.id === selected.id);
   const selectedMessageLoadState = messageLoadStates[selected.id] ?? "ready";
   const contactConversations = useMemo(() => conversations.filter((item) => item.type === "single"), [conversations]);
@@ -1879,14 +1925,46 @@ export function ChatPrototype() {
   const avatarCropPreviewWidth = avatarCropImageSize.width ? avatarCropImageSize.width * avatarCropBaseScale : avatarCropFrameSize;
   const avatarCropPreviewHeight = avatarCropImageSize.height ? avatarCropImageSize.height * avatarCropBaseScale : avatarCropFrameSize;
 
-  const filtered = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    const visible = conversations
-      .filter((item) => !hiddenConversationIds.has(item.id))
-      .sort((left, right) => compareConversations(left, right, pinnedConversationIds));
-    if (!keyword) return visible;
-    return visible.filter((item) => item.name.toLowerCase().includes(keyword) || item.preview.toLowerCase().includes(keyword));
-  }, [conversations, hiddenConversationIds, pinnedConversationIds, query]);
+  const visibleConversations = useMemo(() => conversations
+    .filter((item) => !hiddenConversationIds.has(item.id))
+    .sort((left, right) => compareConversations(left, right, pinnedConversationIds)), [conversations, hiddenConversationIds, pinnedConversationIds]);
+  const globalSearchActive = Boolean(globalQuery.trim());
+  const globalSearchResults = useMemo(() => {
+    const keyword = globalQuery.trim().toLowerCase();
+    if (!keyword) return [] as GlobalSearchResult[];
+    const results: GlobalSearchResult[] = [];
+    const seen = new Set<string>();
+    const push = (item: GlobalSearchResult) => {
+      if (seen.has(item.id)) return;
+      seen.add(item.id);
+      results.push(item);
+    };
+    for (const item of serverGlobalSearchResults) push(item);
+    for (const item of visibleConversations) {
+      if ([item.name, item.preview].join(" ").toLowerCase().includes(keyword)) {
+        push({ id: `conversation-${item.id}`, kind: "conversation", title: item.name, subtitle: item.preview || (item.type === "group" ? (uiLanguage === "zh" ? "群聊" : "Group") : (uiLanguage === "zh" ? "聊天" : "Chat")), conversationId: item.id, avatarUrl: item.avatarUrl, avatarKind: item.type === "group" ? "group" : "user" });
+      }
+    }
+    for (const user of visibleFriends) {
+      const haystack = [user.nickname, user.email, user.phone, user.publicId, user.id, user.signature].filter(Boolean).join(" ").toLowerCase();
+      if (haystack.includes(keyword)) push({ id: `contact-${user.id}`, kind: "contact", title: user.nickname, subtitle: user.email ?? user.phone ?? user.publicId ?? user.id, user, avatarUrl: user.avatarUrl, avatarKind: "user" });
+    }
+    for (const [conversationId, messages] of Object.entries(messagesByConversation)) {
+      const conversation = conversations.find((item) => item.id === conversationId);
+      for (const message of messages) {
+        const translatedText = message.translations ? Object.values(message.translations).filter(Boolean).join(" ") : "";
+        const haystack = [message.body, message.senderName, message.transcript, translatedText, mediaPreviewLabel(message)].filter(Boolean).join(" ").toLowerCase();
+        if (haystack.includes(keyword)) push({ id: `message-${message.id}`, kind: "message", title: conversation?.name ?? message.senderName ?? (uiLanguage === "zh" ? "聊天记录" : "Chat message"), subtitle: mediaPreviewLabel(message) || message.transcript || `[${message.type}]`, conversationId: message.conversationId, messageId: message.id, avatarUrl: conversation?.avatarUrl, avatarKind: conversation?.type === "group" ? "group" : "user" });
+      }
+    }
+    for (const favorite of favoriteMessages) {
+      const tags = favorite.tags ?? [];
+      const haystack = [favorite.conversation?.title, favorite.message.senderName, mediaPreviewLabel(favorite.message), favorite.message.transcript, ...tags].filter(Boolean).join(" ").toLowerCase();
+      if (haystack.includes(keyword)) push({ id: `favorite-${favorite.id}`, kind: "favorite", title: favorite.conversation?.title ?? (uiLanguage === "zh" ? "收藏" : "Favorite"), subtitle: `${tags.length ? `#${tags.join(" #")} · ` : ""}${mediaPreviewLabel(favorite.message)}`, favorite, conversationId: favorite.message.conversationId, messageId: favorite.message.id, avatarKind: "group" });
+    }
+    return results.slice(0, 80);
+  }, [conversations, favoriteMessages, globalQuery, messagesByConversation, serverGlobalSearchResults, uiLanguage, visibleConversations, visibleFriends]);
+  const filtered = visibleConversations;
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -1926,6 +2004,7 @@ export function ChatPrototype() {
     setProfileEmailPublic(currentUser.profileEmailPublic === true);
     setProfilePhonePublic(currentUser.profilePhonePublic === true);
     setProfileNicknameValue(currentUser.nickname ?? "");
+    setProfilePhoneValue(currentUser.phone ?? "");
     setProfileAvatarPreviewUrl(getStoredAvatarPreview(currentUser.id));
     setProfileAvatarUrl(normalizeMediaUrl(currentUser.avatarUrl ?? undefined) ?? "");
     setProfileCompany(currentUser.company ?? "");
@@ -1988,6 +2067,15 @@ export function ChatPrototype() {
   }, [currentUser?.id, pinnedConversationIds]);
 
   useEffect(() => {
+    if (!accessToken) {
+      setFavoriteMessages([]);
+      setFavoriteMessageIds(new Set());
+      return;
+    }
+    void loadFavorites(accessToken);
+  }, [accessToken]);
+
+  useEffect(() => {
     if (!currentUser?.id) {
       setMessageReminders([]);
       return;
@@ -2037,9 +2125,6 @@ export function ChatPrototype() {
     accessTokenRef.current = accessToken;
   }, [accessToken]);
 
-  useEffect(() => {
-    voiceTranscriptDraftRef.current = voiceTranscriptDraft;
-  }, [voiceTranscriptDraft]);
 
   useEffect(() => {
     return () => {
@@ -2365,16 +2450,30 @@ export function ChatPrototype() {
     void loadFriendData(accessToken);
   }, [accessToken, tab]);
   useEffect(() => {
-    if (!accessToken || tab !== "contacts" || query.trim().length < 2) {
+    if (!accessToken || tab !== "contacts" || contactQuery.trim().length < 2) {
       setContactResults([]);
       return;
     }
     const timer = window.setTimeout(() => {
-      void searchUsers(query);
+      void searchUsers(contactQuery);
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [accessToken, tab, query]);
+  }, [accessToken, tab, contactQuery]);
 
+
+  useEffect(() => {
+    const keyword = globalQuery.trim();
+    if (!accessToken || keyword.length < 2) {
+      setServerGlobalSearchResults([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      apiJson<{ results: GlobalSearchResult[] }>(`/search/global?q=${encodeURIComponent(keyword)}`, accessToken)
+        .then((data) => setServerGlobalSearchResults(data.results))
+        .catch(() => setServerGlobalSearchResults([]));
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [accessToken, globalQuery]);
   useEffect(() => {
     if (!accessToken || !selectedExists) return;
     queueAutoTranslations(currentMessages, translationTargetLanguage);
@@ -2825,11 +2924,14 @@ export function ChatPrototype() {
     if (!token) return;
     setFriendDataLoading(true);
     try {
+      setFriendDataError("");
       const friendsData = await apiJson<{ friends: SearchUser[] }>("/contacts/friends", token);
       setFriendRequests([]);
       setFriends(friendsData.friends.map((friend) => ({ ...friend, online: onlineUserIds.has(friend.id) })));
     } catch (error) {
-      setNotice(extractErrorMessage(error, t.friendRequestFailed));
+      const message = extractErrorMessage(error, t.friendRequestFailed);
+      setFriendDataError(message);
+      setNotice(message);
     } finally {
       setFriendDataLoading(false);
     }
@@ -2931,6 +3033,33 @@ export function ChatPrototype() {
     }
   }
 
+  function openGlobalSearchResult(result: GlobalSearchResult) {
+    setGlobalQuery("");
+    if (result.kind === "contact" && result.user) {
+      setContactDetailsUser(result.user);
+      setTab("contacts");
+      setMobilePane("list");
+      return;
+    }
+    if (result.favorite) {
+      jumpToFavoriteMessage(result.favorite);
+      return;
+    }
+    if (result.conversationId) {
+      if (result.message) {
+        setMessagesByConversation((current) => ({
+          ...current,
+          [result.message!.conversationId]: mergeMessages(current[result.message!.conversationId] ?? [], [result.message!])
+        }));
+      }
+      setSelectedId(result.conversationId);
+      setWelcomeDismissed(true);
+      setTab("chats");
+      setMobilePane("chat");
+      if (result.messageId) window.setTimeout(() => void jumpToMessage(result.messageId!), 180);
+      else requestScrollToBottom("auto");
+    }
+  }
   async function startDirectConversation(user: SearchUser) {
     try {
       const data = await apiJson<{ conversation: ConversationSummary }>("/conversations/direct", accessToken, {
@@ -2940,6 +3069,7 @@ export function ChatPrototype() {
       const mapped = mapConversation(data.conversation);
       setConversations((items) => [mapped, ...items.filter((item) => item.id !== mapped.id)]);
       setSelectedId(mapped.id);
+      setWelcomeDismissed(true);
       setTab("chats");
       setMobilePane("chat");
       requestScrollToBottom("auto");
@@ -2976,6 +3106,7 @@ export function ChatPrototype() {
       const mapped = mapConversation(data.conversation);
       setConversations((items) => [mapped, ...items.filter((item) => item.id !== mapped.id)]);
       setSelectedId(mapped.id);
+      setWelcomeDismissed(true);
       setTab("chats");
       setMobilePane("chat");
       setGroupModalOpen(false);
@@ -2993,8 +3124,18 @@ export function ChatPrototype() {
       setGroupCreating(false);
     }
   }
+
+  async function startSelfConversation() {
+    if (!currentUser) return;
+    await startDirectConversation({
+      ...currentUser,
+      avatarUrl: profileAvatarPreviewUrl || profileAvatarUrl || currentUser.avatarUrl,
+      online: true
+    });
+  }
   function selectConversation(id: string) {
     setSelectedId(id);
+    setWelcomeDismissed(true);
     setTab("chats");
     setMobilePane("chat");
     setNotice("");
@@ -3015,19 +3156,14 @@ export function ChatPrototype() {
     window.setTimeout(() => scrollMessagesToBottom("smooth"), 80);
   }
 
+  function openWelcomePage() {
+    setWelcomeOpen(true);
+    setWelcomeDismissed(false);
+    setMobilePane("chat");
+  }
+
   function handleTitleClick() {
-    titleClickCountRef.current += 1;
-    if (titleClickTimerRef.current) window.clearTimeout(titleClickTimerRef.current);
-    titleClickTimerRef.current = window.setTimeout(() => {
-      titleClickCountRef.current = 0;
-      titleClickTimerRef.current = null;
-    }, 360);
-    if (titleClickCountRef.current >= 2) {
-      titleClickCountRef.current = 0;
-      if (titleClickTimerRef.current) window.clearTimeout(titleClickTimerRef.current);
-      titleClickTimerRef.current = null;
-      jumpToLatestUnreadOrBottom();
-    }
+    openWelcomePage();
   }
 
   async function markConversationRead(conversationId: string) {
@@ -3476,6 +3612,133 @@ export function ChatPrototype() {
       body: mediaPreviewLabel(message).slice(0, 180)
     });
   }
+  function parseFavoriteTags(input: string) {
+    const seen = new Set<string>();
+    const tags: string[] = [];
+    for (const item of input.split(/[,#，、\s]+/)) {
+      const tag = item.trim().replace(/^#+/, "").slice(0, 24);
+      const key = tag.toLowerCase();
+      if (!tag || seen.has(key)) continue;
+      seen.add(key);
+      tags.push(tag);
+      if (tags.length >= 8) break;
+    }
+    return tags;
+  }
+
+  function promptFavoriteTags() {
+    const input = window.prompt(uiLanguage === "zh" ? "输入收藏标签，可用逗号、空格或顿号分隔" : "Enter favorite tags, separated by comma or space", "");
+    if (input === null) return null;
+    return parseFavoriteTags(input);
+  }
+  async function loadFavorites(token = accessToken) {
+    if (!token) return;
+    setFavoritesLoading(true);
+    try {
+      const result = await apiJson<{ favorites: FavoriteMessageView[] }>("/favorites", token);
+      setFavoriteMessages(result.favorites);
+      setFavoriteMessageIds(new Set(result.favorites.map((item) => item.message.id)));
+    } catch (error) {
+      setNotice(extractErrorMessage(error, uiLanguage === "zh" ? "收藏加载失败。" : "Failed to load favorites."));
+    } finally {
+      setFavoritesLoading(false);
+    }
+  }
+
+  function isMessagePendingForFavorite(message: MessagePayload) {
+    const status = messageStatusesRef.current[message.id];
+    return status === "sending" || status === "failed";
+  }
+
+  async function toggleFavoriteMessage(message: MessagePayload) {
+    if (!accessToken || message.revokedAt) return;
+    if (isMessagePendingForFavorite(message)) {
+      setNotice(uiLanguage === "zh" ? "消息发送完成后才能收藏。" : "You can favorite this message after it is sent.");
+      return;
+    }
+    const wasFavorite = favoriteMessageIds.has(message.id);
+    setFavoriteMessageIds((current) => {
+      const next = new Set(current);
+      if (wasFavorite) next.delete(message.id);
+      else next.add(message.id);
+      return next;
+    });
+    try {
+      if (wasFavorite) {
+        await apiJson<{ ok: true }>("/favorites/" + encodeURIComponent(message.id), accessToken, { method: "DELETE" });
+        setFavoriteMessages((items) => items.filter((item) => item.message.id !== message.id));
+        setNotice(uiLanguage === "zh" ? "已取消收藏。" : "Removed from favorites.");
+      } else {
+        const tags = promptFavoriteTags();
+        if (tags === null) throw new Error("FAVORITE_CANCELLED");
+        const result = await apiJson<{ favorite: FavoriteMessageView }>("/favorites", accessToken, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId: message.id, tags })
+        });
+        setFavoriteMessages((items) => [result.favorite, ...items.filter((item) => item.message.id !== message.id)]);
+        setNotice(uiLanguage === "zh" ? "已收藏。" : "Added to favorites.");
+      }
+    } catch (error) {
+      setFavoriteMessageIds((current) => {
+        const next = new Set(current);
+        if (wasFavorite) next.add(message.id);
+        else next.delete(message.id);
+        return next;
+      });
+      if (error instanceof Error && error.message === "FAVORITE_CANCELLED") return;
+      setNotice(extractErrorMessage(error, uiLanguage === "zh" ? "收藏操作失败。" : "Favorite action failed."));
+    }
+  }
+
+  async function favoriteSelectedMessages() {
+    if (!accessToken) return;
+    const selectedMessages = selectedMessagesForCurrentConversation().filter((message) => !message.revokedAt);
+    const messages = selectedMessages.filter((message) => !isMessagePendingForFavorite(message));
+    if (messages.length === 0) {
+      setNotice(uiLanguage === "zh" ? "所选消息发送完成后才能收藏。" : "Selected messages can be favorited after they are sent.");
+      return;
+    }
+    const tags = promptFavoriteTags();
+    if (tags === null) return;
+    let done = 0;
+    for (const message of messages) {
+      try {
+        const result = await apiJson<{ favorite: FavoriteMessageView }>("/favorites", accessToken, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId: message.id, tags })
+        });
+        done += 1;
+        setFavoriteMessages((items) => [result.favorite, ...items.filter((item) => item.message.id !== message.id)]);
+      } catch {
+        // Keep trying the rest of the selected messages.
+      }
+    }
+    if (done > 0) {
+      setFavoriteMessageIds((current) => {
+        const next = new Set(current);
+        for (const message of messages) next.add(message.id);
+        return next;
+      });
+      setNotice(uiLanguage === "zh" ? "已收藏所选消息。" : "Selected messages added to favorites.");
+      cancelMessageSelection();
+    } else {
+      setNotice(uiLanguage === "zh" ? "收藏失败。" : "Favorite action failed.");
+    }
+  }
+
+  function jumpToFavoriteMessage(item: FavoriteMessageView) {
+    setFavoritesOpen(false);
+    setSelectedId(item.message.conversationId);
+    setMobilePane("chat");
+    setMessagesByConversation((current) => ({
+      ...current,
+      [item.message.conversationId]: mergeMessages(current[item.message.conversationId] ?? [], [item.message])
+    }));
+    window.setTimeout(() => void jumpToMessage(item.message.id), 180);
+  }
+
   async function copyMessageText(message: MessagePayload) {
     const text = message.body?.trim();
     if (!text) return;
@@ -3504,38 +3767,125 @@ export function ChatPrototype() {
     }
   }
 
-  function readMessageText(text: string | undefined, language: string, key: string) {
+  async function getBrowserSpeechVoices() {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return [] as SpeechSynthesisVoice[];
+    return window.speechSynthesis.getVoices();
+  }
+
+  async function readMessageText(text: string | undefined, language: string, key: string) {
     const content = text?.trim();
-    if (!content) return;
+    if (!content) {
+      setNotice(uiLanguage === "zh" ? "没有可朗读的文字。" : "There is no text to read.");
+      return;
+    }
+    if (speakingMessageKey === key) {
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current = null;
+      }
+      if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+      setSpeakingMessageKey("");
+      return;
+    }
+    if (ttsConfig.provider === "doubao") {
+      if (!accessToken) return;
+      try {
+        if (ttsAudioRef.current) ttsAudioRef.current.pause();
+        if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+        setSpeakingMessageKey(key);
+        const response = await fetchWithTimeout(`${getApiUrl()}/voice/tts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({ text: content, language, voiceType: doubaoVoiceType || ttsConfig.doubao.voiceType })
+        }, 70000);
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => "");
+          throw new Error(apiErrorMessage(errorText ? JSON.parse(errorText) : {}, uiLanguage === "zh" ? "豆包朗读失败。" : "Doubao read-aloud failed."));
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        ttsAudioRef.current = audio;
+        audio.onended = () => { URL.revokeObjectURL(url); setSpeakingMessageKey((current) => (current === key ? "" : current)); };
+        audio.onerror = () => { URL.revokeObjectURL(url); setSpeakingMessageKey((current) => (current === key ? "" : current)); setNotice(uiLanguage === "zh" ? "豆包朗读音频播放失败。" : "Doubao audio playback failed."); };
+        await audio.play();
+        return;
+      } catch (error) {
+        setSpeakingMessageKey("");
+        const reason = extractErrorMessage(error, uiLanguage === "zh" ? "豆包朗读失败。" : "Doubao read-aloud failed.");
+        setNotice(reason);
+        return;
+      }
+    }
     if (typeof window === "undefined" || !("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
       setNotice(messageActionLabels[uiLanguage].speechUnavailable);
       return;
     }
-    if (speakingMessageKey === key && window.speechSynthesis.speaking) {
-      window.speechSynthesis.cancel();
-      setSpeakingMessageKey("");
-      return;
-    }
     window.speechSynthesis.cancel();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
     const selectedLanguage = speechAccent === "auto" ? language : speechAccent;
-    const utterance = new SpeechSynthesisUtterance(content);
-    utterance.lang = selectedLanguage;
-    const voices = window.speechSynthesis.getVoices();
-    const voice = voices.find((item) => item.lang.toLowerCase() === selectedLanguage.toLowerCase()) ?? voices.find((item) => item.lang.toLowerCase().startsWith(selectedLanguage.toLowerCase().slice(0, 2)));
-    if (voice) utterance.voice = voice;
-    utterance.onend = () => setSpeakingMessageKey((current) => (current === key ? "" : current));
-    utterance.onerror = () => setSpeakingMessageKey((current) => (current === key ? "" : current));
+    const voices = await getBrowserSpeechVoices();
+    const normalizedLanguage = selectedLanguage.toLowerCase();
+    const shouldPinBrowserVoice = speechAccent !== "auto";
+    const voice = shouldPinBrowserVoice ? voices.find((item) => item.lang.toLowerCase() === normalizedLanguage) ?? voices.find((item) => item.lang.toLowerCase().startsWith(normalizedLanguage.slice(0, 2))) : undefined;
+    let attempt = 0;
+    const browserSpeechFailureMessage = (errorName: string) => {
+      const detail = errorName ? (uiLanguage === "zh" ? `错误：${errorName}` : `Error: ${errorName}`) : (uiLanguage === "zh" ? "未返回具体错误" : "No detailed error was returned");
+      return uiLanguage === "zh"
+        ? `浏览器朗读失败（${detail}）。电脑可能没有安装该译文语言的语音包；可在系统语言设置中安装，或在后台切换为豆包朗读。`
+        : `Browser read-aloud failed (${detail}). This computer may not have a speech voice for the translated language; install the system voice pack or switch backend settings to Doubao TTS.`;
+    };
+    const browserSpeechFallbackNotice = uiLanguage === "zh"
+      ? "电脑没有可用的目标语言语音，已改用浏览器系统默认音色朗读。"
+      : "No local voice is available for this language, so browser default voice is being used.";
+    const speakWithBrowser = (mode: "preferred" | "languageDefault" | "systemDefault") => {
+      attempt += 1;
+      const utterance = new SpeechSynthesisUtterance(content);
+      if (mode !== "systemDefault") utterance.lang = selectedLanguage;
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+      if (mode === "preferred" && voice) utterance.voice = voice;
+      let started = false;
+      const startedTimer = window.setTimeout(() => { started = true; }, 350);
+      utterance.onstart = () => { started = true; };
+      utterance.onend = () => {
+        window.clearTimeout(startedTimer);
+        setSpeakingMessageKey((current) => (current === key ? "" : current));
+      };
+      utterance.onerror = (event) => {
+        window.clearTimeout(startedTimer);
+        const errorName = typeof event.error === "string" ? event.error : "";
+        if (errorName === "canceled" || errorName === "interrupted") {
+          setSpeakingMessageKey((current) => (current === key ? "" : current));
+          return;
+        }
+        if (mode === "preferred") {
+          window.setTimeout(() => speakWithBrowser("languageDefault"), 120);
+          return;
+        }
+        if (mode === "languageDefault" && !started) {
+          setNotice(browserSpeechFallbackNotice);
+          window.setTimeout(() => speakWithBrowser("systemDefault"), 120);
+          return;
+        }
+        setSpeakingMessageKey((current) => (current === key ? "" : current));
+        setNotice(browserSpeechFailureMessage(errorName));
+      };
+      window.speechSynthesis.speak(utterance);
+      window.setTimeout(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 250);
+    };
     setSpeakingMessageKey(key);
-    window.speechSynthesis.speak(utterance);
+    speakWithBrowser("preferred");
   }
 
-  function readOriginalMessage(message: MessagePayload) {
+  async function readOriginalMessage(message: MessagePayload) {
     const fallback = message.sourceLanguage && message.sourceLanguage !== "auto" ? message.sourceLanguage : "en";
-    readMessageText(message.body, inferSpeechLanguage(message.body, fallback), message.id + ":original");
+    await readMessageText(message.body ?? message.transcript, inferSpeechLanguage(message.body ?? message.transcript, fallback), message.id + ":original");
   }
 
-  function readTranslatedMessage(message: MessagePayload, translated: string, targetLanguage: TranslationLanguage) {
-    readMessageText(translated, speechLanguageByTranslationLanguage[targetLanguage], message.id + ":translation:" + targetLanguage);
+  async function readTranslatedMessage(message: MessagePayload, translated: string, targetLanguage: TranslationLanguage) {
+    await readMessageText(translated, speechLanguageByTranslationLanguage[targetLanguage], message.id + ":translation:" + targetLanguage);
   }
 
   function resetLocationDraft() {
@@ -3653,21 +4003,6 @@ export function ChatPrototype() {
     setReplyingToMessage(null);
   }
 
-  function speechRecognitionLanguage() {
-    if (translationTargetLanguage === "zh") return "zh-CN";
-    if (translationTargetLanguage === "hi") return "hi-IN";
-    return "en-US";
-  }
-
-  function stopVoiceRecognition() {
-    const recognition = voiceRecognitionRef.current;
-    voiceRecognitionRef.current = null;
-    if (recognition) {
-      recognition.onend = null;
-      try { recognition.stop(); } catch { undefined; }
-    }
-  }
-
   async function startVoiceRecording() {
     if (!currentUser || !selectedExists || voiceRecording || mediaUploading) return;
     setVoiceRecording(true);
@@ -3679,29 +4014,6 @@ export function ChatPrototype() {
       voiceChunksRef.current = [];
       voiceStreamRef.current = stream;
       voiceRecorderRef.current = recorder;
-      setVoiceTranscriptDraft("");
-      const SpeechRecognition = (window as WindowWithSpeechRecognition).SpeechRecognition ?? (window as WindowWithSpeechRecognition).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.lang = speechRecognitionLanguage();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.onresult = (event) => {
-          const parts: string[] = [];
-          for (let index = 0; index < event.results.length; index += 1) {
-            const text = event.results[index]?.[0]?.transcript;
-            if (text) parts.push(text.trim());
-          }
-          setVoiceTranscriptDraft(parts.join(" ").trim());
-        };
-        recognition.onend = () => {
-          if (voiceRecorderRef.current?.state === "recording") {
-            try { recognition.start(); } catch { undefined; }
-          }
-        };
-        voiceRecognitionRef.current = recognition;
-        try { recognition.start(); } catch { undefined; }
-      }
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) voiceChunksRef.current.push(event.data);
       };
@@ -3712,7 +4024,6 @@ export function ChatPrototype() {
     } catch (error) {
       setNotice(extractErrorMessage(error, t.voiceRecordFailed));
       setVoiceRecording(false);
-      stopVoiceRecognition();
       voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
       voiceStreamRef.current = null;
     }
@@ -3721,7 +4032,6 @@ export function ChatPrototype() {
   function stopVoiceRecording() {
     const recorder = voiceRecorderRef.current;
     if (!recorder || recorder.state === "inactive") return;
-    stopVoiceRecognition();
     recorder.stop();
     setVoiceRecording(false);
   }
@@ -3739,7 +4049,7 @@ export function ChatPrototype() {
     const url = URL.createObjectURL(blob);
     setPendingVoicePreview((current) => {
       if (current?.url) URL.revokeObjectURL(current.url);
-      return { file, url, name: fileName, transcript: voiceTranscriptDraftRef.current.trim() };
+      return { file, url, name: fileName };
     });
     setNotice(t.voicePreviewReady);
   }
@@ -3749,7 +4059,6 @@ export function ChatPrototype() {
       if (current?.url) URL.revokeObjectURL(current.url);
       return null;
     });
-    setVoiceTranscriptDraft("");
   }
 
   async function sendPendingVoice() {
@@ -3773,7 +4082,6 @@ export function ChatPrototype() {
         type: "audio",
         body: media.fileName,
         mediaUrl: media.url,
-        ...(pending.transcript ? { transcript: pending.transcript } : {}),
         ...(reply
           ? {
               replyToMessageId: reply.id,
@@ -3793,7 +4101,6 @@ export function ChatPrototype() {
       setReplyingToMessage(null);
       emitMessage(message);
       requestScrollToBottom("smooth");
-      setVoiceTranscriptDraft("");
     } catch (error) {
       setNotice(extractErrorMessage(error, t.mediaUploadFailed));
       setPendingVoicePreview(pending);
@@ -3820,6 +4127,26 @@ export function ChatPrototype() {
     });
   }
 
+
+  async function loadTtsRuntimeConfig(token = accessTokenRef.current || accessToken, showNotice = false) {
+    if (!token) return;
+    setTtsConfigLoading(true);
+    setTtsConfigNotice("");
+    try {
+      const config = await apiJson<TtsRuntimeConfig>("/voice/tts/config", token);
+      setTtsConfig(config);
+      setDoubaoVoiceType((current) => {
+        const hasCurrent = config.doubao.voices.some((item) => item.value === current);
+        return hasCurrent ? current : config.doubao.voiceType || config.doubao.voices[0]?.value || "";
+      });
+      if (showNotice) setTtsConfigNotice(uiLanguage === "zh" ? "已刷新后台朗读配置。" : "TTS configuration refreshed.");
+    } catch (error) {
+      setTtsConfig({ provider: "browser", doubao: { voiceType: "", voices: [] } });
+      if (showNotice) setTtsConfigNotice(extractErrorMessage(error, uiLanguage === "zh" ? "朗读配置刷新失败。" : "Could not refresh TTS configuration."));
+    } finally {
+      setTtsConfigLoading(false);
+    }
+  }
   function beginMessageSelect(messageId: string) {
     setMessageSelectMode(true);
     setSelectedMessageIds((current) => new Set(current).add(messageId));
@@ -3845,17 +4172,28 @@ export function ChatPrototype() {
     return currentMessages.filter((message) => selectedMessageIds.has(message.id));
   }
 
-  function openForwardMessages(messages: MessagePayload[]) {
+  function openForwardMessages(messages: MessagePayload[], mode: "normal" | "merged" = "normal") {
     const eligible = messages.filter((message) => !message.revokedAt);
     if (eligible.length === 0) return;
+    setForwardMode(mode);
     setForwardMessages(eligible);
   }
 
   function forwardMessageToConversation(target: Conversation) {
     if (!currentUser || forwardMessages.length === 0) return;
     const now = Date.now();
-    const sentMessages = forwardMessages.map((source, index): MessagePayload => ({
-      id: `local-${now}-${index}-${createBrowserId()}`,
+    const sentMessages = forwardMode === "merged" ? [{
+      id: "local-" + now + "-merged-" + createBrowserId(),
+      conversationId: target.id,
+      senderId: currentUser.id,
+      senderName: currentUser.nickname,
+      type: "text" as MessagePayload["type"],
+      body: forwardMessages.map((source) => [source.senderName ?? source.senderId, formatMessageTime(source.createdAt), mediaPreviewLabel(source)].filter(Boolean).join(" ")).join("\\n\\n"),
+      sourceLanguage: "auto" as MessagePayload["sourceLanguage"],
+      targetLanguage: translationTargetLanguage,
+      createdAt: new Date(now).toISOString()
+    }] : forwardMessages.map((source, index): MessagePayload => ({
+      id: "local-" + now + "-" + index + "-" + createBrowserId(),
       conversationId: target.id,
       senderId: currentUser.id,
       senderName: currentUser.nickname,
@@ -3887,8 +4225,8 @@ export function ChatPrototype() {
       .map((message) => [
         `${message.senderName ?? message.senderId} ${formatMessageTime(message.createdAt)}`,
         mediaPreviewLabel(message)
-      ].filter(Boolean).join("\n"))
-      .join("\n\n");
+      ].filter(Boolean).join("\\n"))
+      .join("\\n\\n");
     if (!text.trim()) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -3907,17 +4245,37 @@ export function ChatPrototype() {
     cancelMessageSelection();
   }
 
-  function toggleVoiceTranscript(message: MessagePayload) {
-    if (!message.transcript?.trim()) {
-      setNotice(t.voiceTranscriptEmpty);
+  async function toggleVoiceTranscript(message: MessagePayload) {
+    if (message.transcript?.trim()) {
+      setVisibleTranscriptIds((current) => {
+        const next = new Set(current);
+        if (next.has(message.id)) next.delete(message.id);
+        else next.add(message.id);
+        return next;
+      });
       return;
     }
-    setVisibleTranscriptIds((current) => {
-      const next = new Set(current);
-      if (next.has(message.id)) next.delete(message.id);
-      else next.add(message.id);
-      return next;
-    });
+    const token = accessTokenRef.current || accessToken;
+    if (!token || voiceTranscriptionLoading[message.id]) return;
+    setVoiceTranscriptionLoading((current) => ({ ...current, [message.id]: true }));
+    setNotice(uiLanguage === "zh" ? "正在转写语音..." : "Transcribing voice...");
+    try {
+      const data = await apiJson<{ message: MessagePayload }>(
+        `/conversations/${encodeURIComponent(message.conversationId)}/messages/${encodeURIComponent(message.id)}/transcribe`,
+        token,
+        { method: "POST", body: JSON.stringify({ targetLanguage: translationTargetLanguage }) }
+      );
+      setMessagesByConversation((current) => ({
+        ...current,
+        [data.message.conversationId]: mergeMessages(current[data.message.conversationId] ?? [], [data.message])
+      }));
+      setVisibleTranscriptIds((current) => new Set(current).add(data.message.id));
+      setNotice(messageActionLabels[uiLanguage].translated);
+    } catch (error) {
+      setNotice(extractErrorMessage(error, uiLanguage === "zh" ? "语音转文字失败，请稍后重试。" : "Voice transcription failed."));
+    } finally {
+      setVoiceTranscriptionLoading((current) => ({ ...current, [message.id]: false }));
+    }
   }
 
   function revokeWindowForMessage(message: MessagePayload) {
@@ -4257,6 +4615,7 @@ export function ChatPrototype() {
           profilePublic: profileIsPublic,
           profileEmailPublic,
           profilePhonePublic,
+          phone: profilePhoneValue,
           nickname: profileNicknameValue,
           avatarUrl: profileAvatarUrl,
           company: profileCompany,
@@ -4410,16 +4769,23 @@ export function ChatPrototype() {
     if (!accessToken || currentUser?.role !== "admin") return;
     setAdminLoading(true);
     try {
-      const [overviewData, usersData, conversationsData, feedbackData] = await Promise.all([
-        apiJson<{ overview: AdminOverview }>("/admin/overview", accessToken),
-        apiJson<{ users: AdminUserRow[] }>("/admin/users", accessToken),
-        apiJson<{ conversations: AdminConversationRow[] }>("/admin/conversations", accessToken),
-        apiJson<{ feedback: AdminFeedbackRow[] }>("/admin/feedback", accessToken)
+      const permissions = currentUser.adminPermissions ?? [];
+      const canAdmin = (permission: AdminPermission) => permissions.length === 0 || permissions.includes(permission);
+      const [overviewData, usersData, conversationsData, feedbackData, settingsData, adminsData] = await Promise.all([
+        canAdmin("overview") ? apiJson<{ overview: AdminOverview }>("/admin/overview", accessToken) : Promise.resolve<{ overview: AdminOverview | null }>({ overview: null }),
+        canAdmin("users") ? apiJson<{ users: AdminUserRow[] }>("/admin/users", accessToken) : Promise.resolve({ users: [] }),
+        canAdmin("conversations") ? apiJson<{ conversations: AdminConversationRow[] }>("/admin/conversations", accessToken) : Promise.resolve({ conversations: [] }),
+        canAdmin("feedback") ? apiJson<{ feedback: AdminFeedbackRow[] }>("/admin/feedback", accessToken) : Promise.resolve({ feedback: [] }),
+        canAdmin("settings") ? apiJson<{ settings: AdminSettingRow[] }>("/admin/settings", accessToken) : Promise.resolve({ settings: [] }),
+        canAdmin("admins") ? apiJson<{ admins: AdminUserRow[] }>("/admin/admins", accessToken) : Promise.resolve({ admins: [] })
       ]);
       setAdminOverview(overviewData.overview);
       setAdminUsers(usersData.users);
       setAdminConversations(conversationsData.conversations);
       setAdminFeedback(feedbackData.feedback);
+      setAdminSettings(settingsData.settings);
+      setAdminSettingDrafts(Object.fromEntries(settingsData.settings.map((item) => [item.key, item.value ?? ""])));
+      setAdminAccounts(adminsData.admins);
       setAdminModalOpen(true);
     } catch (error) {
       setNotice(extractErrorMessage(error, t.adminLoadFailed));
@@ -4473,6 +4839,78 @@ export function ChatPrototype() {
       setNotice(t.adminPasswordResetDone);
     } catch (error) {
       setNotice(extractErrorMessage(error, t.adminPasswordResetFailed));
+    } finally {
+      setAdminActionUserId("");
+    }
+  }
+  function toggleAdminAccountFormPermission(permission: AdminPermission) {
+    setAdminAccountForm((form) => ({
+      ...form,
+      adminPermissions: form.adminPermissions.includes(permission)
+        ? form.adminPermissions.filter((item) => item !== permission)
+        : [...form.adminPermissions, permission]
+    }));
+  }
+
+  async function saveAdminSettings() {
+    if (!accessToken || currentUser?.role !== "admin") return;
+    setAdminSettingsSaving(true);
+    setAdminSettingsNotice("");
+    try {
+      const data = await apiJson<{ settings: AdminSettingRow[] }>("/admin/settings", accessToken, {
+        method: "POST",
+        body: JSON.stringify({ settings: adminSettings.map((item) => ({ key: item.key, value: adminSettingDrafts[item.key] ?? "" })) })
+      });
+      setAdminSettings(data.settings);
+      setAdminSettingDrafts(Object.fromEntries(data.settings.map((item) => [item.key, item.value ?? ""])));
+      const changedKeys = Object.keys(adminSettingDrafts).filter((key) => adminSettings.some((item) => item.key === key));
+      const changedGroups = Array.from(new Set(adminSettings.filter((item) => changedKeys.includes(item.key)).map((item) => item.group)));
+      const changedLabel = changedGroups.length ? changedGroups.join(" / ") : (uiLanguage === "zh" ? "系统配置" : "system settings");
+      setAdminSettingsNotice(uiLanguage === "zh" ? `已保存：${changedLabel}。部分前台配置需要刷新设置或重新登录后生效。` : `Saved: ${changedLabel}. Some frontend settings require refresh or signing in again to take effect.`);
+      setNotice(uiLanguage === "zh" ? "系统配置已保存。" : "System settings saved.");
+    } catch (error) {
+      const message = extractErrorMessage(error, uiLanguage === "zh" ? "系统配置保存失败。" : "Could not save system settings.");
+      setAdminSettingsNotice(message);
+      setNotice(message);
+    } finally {
+      setAdminSettingsSaving(false);
+    }
+  }
+
+  async function createAdminAccount() {
+    if (!accessToken || currentUser?.role !== "admin") return;
+    setAdminAccountSaving(true);
+    try {
+      const data = await apiJson<{ admin: AdminUserRow }>("/admin/admins", accessToken, {
+        method: "POST",
+        body: JSON.stringify(adminAccountForm)
+      });
+      setAdminAccounts((items) => [data.admin, ...items.filter((item) => item.id !== data.admin.id)]);
+      setAdminUsers((items) => [data.admin, ...items.filter((item) => item.id !== data.admin.id)]);
+      setAdminAccountForm({ email: "", phone: "", nickname: "", password: "", adminPermissions: ADMIN_PERMISSION_OPTIONS.map((item) => item.code) });
+      setNotice(uiLanguage === "zh" ? "管理员账户已创建。" : "Administrator account created.");
+    } catch (error) {
+      setNotice(extractErrorMessage(error, uiLanguage === "zh" ? "管理员账户创建失败。" : "Could not create administrator."));
+    } finally {
+      setAdminAccountSaving(false);
+    }
+  }
+
+  async function saveAdminPermissions(admin: AdminUserRow, permission: AdminPermission, checked: boolean) {
+    if (!accessToken || currentUser?.role !== "admin") return;
+    const nextPermissions = checked
+      ? Array.from(new Set([...(admin.adminPermissions ?? []), permission]))
+      : (admin.adminPermissions ?? []).filter((item) => item !== permission);
+    setAdminActionUserId(admin.id);
+    try {
+      const data = await apiJson<{ admin: AdminUserRow }>(`/admin/admins/${admin.id}/permissions`, accessToken, {
+        method: "POST",
+        body: JSON.stringify({ adminPermissions: nextPermissions })
+      });
+      setAdminAccounts((items) => items.map((item) => (item.id === data.admin.id ? data.admin : item)));
+      setAdminUsers((items) => items.map((item) => (item.id === data.admin.id ? data.admin : item)));
+    } catch (error) {
+      setNotice(extractErrorMessage(error, uiLanguage === "zh" ? "权限保存失败。" : "Could not save permissions."));
     } finally {
       setAdminActionUserId("");
     }
@@ -4561,10 +4999,13 @@ export function ChatPrototype() {
       }
       setAuthCodeSent(true);
       setAuthCodeCountdown(60);
-      const timer = setInterval(() => {
-        setAuthCodeCountdown((prev) => {
-          if (prev <= 1) { clearInterval(timer); return 0; }
-          return prev - 1;
+      const timer = window.setInterval(() => {
+        setAuthCodeCountdown((previous) => {
+          if (previous <= 1) {
+            window.clearInterval(timer);
+            return 0;
+          }
+          return previous - 1;
         });
       }, 1000);
     } catch (error) {
@@ -4596,9 +5037,16 @@ export function ChatPrototype() {
         throw new Error(message || t.authFailed);
       }
       const auth = data as AuthResponse;
+      const justRegistered = authMode === "register";
       storeAuth(auth);
       setAccessToken(auth.accessToken);
       setCurrentUser(auth.user);
+      void loadTtsRuntimeConfig(auth.accessToken);
+      if (justRegistered) {
+        setWelcomeOpen(true);
+        setWelcomeDismissed(false);
+        setMobilePane("chat");
+      }
       await loadConversations(auth.accessToken);
     } catch (error) {
       setAuthError(extractErrorMessage(error, t.authFailed));
@@ -4958,7 +5406,7 @@ export function ChatPrototype() {
       <main className="grid min-h-screen place-items-center bg-[#f6f7f5] px-4">
         <section className="w-full max-w-sm rounded border border-line bg-white p-5 shadow-sm">
           <div className="flex items-center gap-3">
-            <img className="h-12 w-12 rounded object-contain" src="/glimpse-logo.png" alt="Glimpse Chat" />
+            <img className="h-14 w-20 rounded object-contain" src="/glimpse-logo-login.png" alt="Glimpse Chat" />
             <div>
               <h1 className="text-2xl font-semibold text-ink">Glimpse Chat</h1>
               <p className="mt-1 text-sm text-slate-500">Sign in to your chat workspace.</p>
@@ -5023,7 +5471,7 @@ export function ChatPrototype() {
         <aside className={`border-line ${mobilePane === "chat" ? "hidden lg:flex" : "flex"} max-h-[100dvh] w-full shrink-0 flex-col overflow-hidden border-b bg-white lg:max-h-none lg:min-h-0 lg:w-[360px] lg:border-b-0 lg:border-r`}>
           <header className="border-line flex h-16 items-center justify-between border-b px-4">
             <div>
-              <button className="flex items-center gap-2 text-left select-none" onClick={handleTitleClick} onDoubleClick={(event) => { event.preventDefault(); jumpToLatestUnreadOrBottom(); }} type="button" title={uiLanguage === "zh" ? "双击定位未读消息" : "Double click to locate unread messages"}><h1 className="text-xl font-semibold text-ink">Glimpse Chat</h1><OnlineDot online={ownOnline} size="md" /></button>
+              <button className="flex items-center gap-2 text-left select-none" onClick={handleTitleClick} type="button" title={uiLanguage === "zh" ? "打开欢迎页" : "Open welcome page"}><h1 className="text-xl font-semibold text-ink">Glimpse Chat</h1><OnlineDot online={ownOnline} size="md" /></button>
               <p className="text-xs text-slate-500">{t.subtitle}</p>
             </div>
             <div className="flex gap-2">
@@ -5057,15 +5505,34 @@ export function ChatPrototype() {
                 </select>
               </label>
               <label className="mt-3 block text-xs font-medium text-slate-500">
-                {t.speechAccent}
-                <select className="mt-1 h-10 w-full rounded border border-line bg-white px-3 text-sm text-ink outline-none focus:border-brand" value={speechAccent} onChange={(event) => setSpeechAccent(event.target.value as SpeechAccent)}>
-                  {speechAccentOptions.map((item) => (
-                    <option key={item.code} value={item.code}>
-                      {item.code === "auto" ? t.speechAccentAuto : item.label}
-                    </option>
-                  ))}
-                </select>
+                {ttsConfig.provider === "doubao" ? uiLanguage === "zh" ? "豆包朗读音色" : "Doubao voice" : t.speechAccent}
+                {ttsConfig.provider === "doubao" ? (
+                  <select className="mt-1 h-10 w-full rounded border border-line bg-white px-3 text-sm text-ink outline-none focus:border-brand" value={doubaoVoiceType || ttsConfig.doubao.voiceType} onChange={(event) => setDoubaoVoiceType(event.target.value)}>
+                    {(ttsConfig.doubao.voices.length ? ttsConfig.doubao.voices : [{ value: ttsConfig.doubao.voiceType, label: ttsConfig.doubao.voiceType }]).map((item) => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <select className="mt-1 h-10 w-full rounded border border-line bg-white px-3 text-sm text-ink outline-none focus:border-brand" value={speechAccent} onChange={(event) => setSpeechAccent(event.target.value as SpeechAccent)}>
+                    {speechAccentOptions.map((item) => (
+                      <option key={item.code} value={item.code}>
+                        {item.code === "auto" ? t.speechAccentAuto : item.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <span className="mt-1 block text-[11px] font-normal text-slate-400">{ttsConfig.provider === "doubao" ? uiLanguage === "zh" ? "当前由后台豆包 TTS 配置控制。" : "Controlled by backend Doubao TTS settings." : uiLanguage === "zh" ? "当前使用浏览器内置朗读。" : "Using browser built-in speech synthesis."}</span>
               </label>
+              <div className="mt-3 rounded border border-line bg-paper px-3 py-3 text-xs text-slate-500">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="block font-medium text-ink">{uiLanguage === "zh" ? "当前朗读配置" : "Current TTS configuration"}</span>
+                    <span className="block truncate">{ttsConfig.provider === "doubao" ? uiLanguage === "zh" ? `豆包朗读 · ${doubaoVoiceType || ttsConfig.doubao.voiceType || "未设置音色"}` : `Doubao TTS · ${doubaoVoiceType || ttsConfig.doubao.voiceType || "No voice"}` : uiLanguage === "zh" ? "浏览器内置朗读" : "Browser built-in TTS"}</span>
+                    {ttsConfigNotice ? <span className="mt-1 block text-brand">{ttsConfigNotice}</span> : null}
+                  </div>
+                  <button className="shrink-0 rounded border border-line bg-white px-3 py-1.5 text-xs font-medium text-ink hover:border-brand disabled:opacity-60" type="button" disabled={ttsConfigLoading} onClick={() => void loadTtsRuntimeConfig(undefined, true)}>{ttsConfigLoading ? "..." : uiLanguage === "zh" ? "刷新配置" : "Refresh"}</button>
+                </div>
+              </div>
               <div className="mt-4 space-y-2 rounded border border-line bg-paper px-3 py-3">
                 <label className="flex items-start gap-3 text-sm text-ink">
                   <input className="mt-1 h-4 w-4 accent-brand" type="checkbox" checked={notificationsEnabled} onChange={(event) => updateNotificationsEnabled(event.target.checked)} />
@@ -5087,6 +5554,15 @@ export function ChatPrototype() {
               <div className="mt-4 rounded border border-line bg-paper px-3 py-3 text-xs text-slate-500" data-settings-version-row="true">
                 <span className="font-medium text-ink">{t.versionLabel}</span>: {GLIMPSE_CHAT_VERSION}
               </div>
+              <div className="mt-3 rounded border border-line bg-paper px-3 py-3 text-xs text-slate-500">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <span className="block font-medium text-ink">{uiLanguage === "zh" ? "关于" : "About"}</span>
+                    <span>{uiLanguage === "zh" ? "打开欢迎页和快速入口。" : "Open welcome page and quick links."}</span>
+                  </div>
+                  <button className="rounded border border-line bg-white px-3 py-1.5 text-xs font-medium text-ink hover:border-brand" type="button" onClick={openWelcomePage}>{uiLanguage === "zh" ? "打开" : "Open"}</button>
+                </div>
+              </div>
               <form className="mt-4 space-y-2 rounded border border-line bg-paper px-3 py-3" onSubmit={handleChangePassword}>
                 <p className="text-sm font-medium text-ink">{t.changePasswordTitle}</p>
                 <input className="h-10 w-full rounded border border-line bg-white px-3 text-sm text-ink outline-none focus:border-brand" type="password" autoComplete="current-password" placeholder={t.currentPassword} value={changePasswordCurrent} onChange={(event) => setChangePasswordCurrent(event.target.value)} />
@@ -5101,7 +5577,7 @@ export function ChatPrototype() {
           <div className="border-line border-b p-3">
             <label className="flex h-11 items-center gap-2 rounded border border-line bg-paper px-3 text-sm text-slate-500">
               <Search size={18} />
-              <input className="w-full bg-transparent text-ink outline-none" placeholder={t.search} value={query} onChange={(event) => setQuery(event.target.value)} />
+              <input className="w-full bg-transparent text-ink outline-none" placeholder={uiLanguage === "zh" ? "全局搜索聊天、联系人、收藏" : "Search chats, contacts, messages, favorites"} value={globalQuery} onChange={(event) => setGlobalQuery(event.target.value)} />
             </label>
           </div>
 
@@ -5113,7 +5589,24 @@ export function ChatPrototype() {
 
           <section className="min-h-0 flex-1 overflow-auto">
             {notice && (tab !== "me" || !profileNotice) ? <div className="glimpse-notice-fade border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800" role="status">{localizeNoticeMessage(notice, uiLanguage)}</div> : null}
-            {tab === "chats" ? (
+            {globalSearchActive ? (
+              <div className="divide-y divide-line">
+                <div className="px-4 py-3 text-xs font-semibold uppercase text-slate-500">{uiLanguage === "zh" ? "全局搜索结果" : "Global search results"}</div>
+                {globalSearchResults.length === 0 ? <p className="px-4 py-6 text-sm text-slate-500">{t.empty}</p> : null}
+                {globalSearchResults.map((result) => (
+                  <button key={result.id} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-paper" onClick={() => openGlobalSearchResult(result)} type="button">
+                    <Avatar name={result.title} url={result.avatarUrl} kind={result.avatarKind === "group" ? "group" : "user"} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate font-medium text-ink">{result.title}</p>
+                        <span className="shrink-0 rounded bg-paper px-1.5 py-0.5 text-[11px] text-slate-500">{result.kind === "conversation" ? (uiLanguage === "zh" ? "聊天" : "Chat") : result.kind === "contact" ? (uiLanguage === "zh" ? "联系人" : "Contact") : result.kind === "message" ? (uiLanguage === "zh" ? "消息" : "Message") : (uiLanguage === "zh" ? "收藏" : "Favorite")}</span>
+                      </div>
+                      <p className="truncate text-sm text-slate-500">{result.subtitle}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : tab === "chats" ? (
               conversationsLoading && conversations.length === 0 ? (
                 <p className="px-4 py-6 text-sm text-slate-500">{t.loadingConversations}</p>
               ) : conversationsFailed && conversations.length === 0 ? (
@@ -5142,15 +5635,19 @@ export function ChatPrototype() {
               )
             ) : null}
 
-            {tab === "contacts" ? (
+            {!globalSearchActive && tab === "contacts" ? (
               <div className="divide-y divide-line">
                 <div className="space-y-3 px-4 py-3 text-sm text-slate-500">
                   <p>{t.contactHint}</p>
+                  <label className="flex h-10 items-center gap-2 rounded border border-line bg-white px-3 text-sm text-slate-500">
+                    <Search size={16} />
+                    <input className="w-full bg-transparent text-ink outline-none" placeholder={uiLanguage === "zh" ? "搜索邮箱、手机号、昵称或ID添加联系人" : "Search email, phone, nickname, or ID to add"} value={contactQuery} onChange={(event) => setContactQuery(event.target.value)} />
+                  </label>
                   <button className="inline-flex h-10 items-center gap-2 rounded bg-brand px-3 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-60" onClick={() => { setNotice(""); setGroupError(""); setGroupModalOpen(true); }} type="button">
                     <Users size={16} />{t.createGroup}
                   </button>
                 </div>
-                {query.trim().length < 2 && blockedUsers.length > 0 ? (
+                {contactQuery.trim().length < 2 && blockedUsers.length > 0 ? (
                   <div className="px-4 py-3">
                     <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{t.blockedUsersTitle}</p>
                     <div className="space-y-1">
@@ -5167,7 +5664,7 @@ export function ChatPrototype() {
                     </div>
                   </div>
                 ) : null}
-                {query.trim().length < 2 ? (
+                {contactQuery.trim().length < 2 ? (
                   <div className="px-4 py-3">
                     <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{t.friendsTitle}</p>
                     {friendDataLoading ? <p className="py-4 text-sm text-slate-500">{t.searching}</p> : null}
@@ -5190,8 +5687,8 @@ export function ChatPrototype() {
                   </div>
                 ) : null}
                 {contactsLoading ? <p className="px-4 py-4 text-sm text-slate-500">{t.searching}</p> : null}
-                {!contactsLoading && query.trim().length >= 2 && contactResults.length === 0 ? <p className="px-4 py-4 text-sm text-slate-500">{t.empty}</p> : null}
-                {query.trim().length >= 2
+                {!contactsLoading && contactQuery.trim().length >= 2 && contactResults.length === 0 ? <p className="px-4 py-4 text-sm text-slate-500">{t.empty}</p> : null}
+                {contactQuery.trim().length >= 2
                   ? contactResults.map((user) => (
                       <div key={user.id} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-paper">
                         <button className="relative shrink-0" onClick={() => setContactDetailsUser(user)} type="button" aria-label={t.viewContactDetails}><Avatar name={user.nickname} url={user.avatarUrl} /><OnlineDot online={Boolean(user.online)} className="absolute -bottom-0.5 -right-0.5 ring-2 ring-white" /></button>
@@ -5215,7 +5712,7 @@ export function ChatPrototype() {
               </div>
             ) : null}
 
-            {tab === "me" ? (
+            {!globalSearchActive && tab === "me" ? (
               <div className="space-y-3 p-4">
                 <form className="rounded border border-line bg-white p-4" onSubmit={handleSaveProfile}>
                   <div className="flex items-start justify-between gap-3">
@@ -5237,6 +5734,9 @@ export function ChatPrototype() {
                         <input checked={showSenderNames} onChange={(event) => setShowSenderNames(event.target.checked)} type="checkbox" />
                         {t.showSenderNames}
                       </label>
+                      <button className="inline-flex h-9 items-center gap-2 rounded border border-line bg-white px-3 text-sm font-medium text-ink hover:border-brand" onClick={() => { setFavoritesOpen(true); void loadFavorites(); }} type="button">
+                        <Star size={16} />{uiLanguage === "zh" ? "我的收藏" : "My favorites"}
+                      </button>
                     </div>
                     <div className="rounded border border-line bg-paper px-3 py-3">
                       <div className="flex items-center justify-between gap-3">
@@ -5258,11 +5758,11 @@ export function ChatPrototype() {
                     {profileNotice ? <div className="glimpse-notice-fade rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" role="status">{localizeNoticeMessage(profileNotice, uiLanguage)}</div> : null}
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="block text-xs font-medium text-slate-500">{t.profileEmail}<input className="mt-1 h-10 w-full rounded border border-line bg-paper px-3 text-sm text-slate-500" disabled value={currentUser?.email ?? ""} readOnly /></label>
-                      <label className="block text-xs font-medium text-slate-500">{t.profilePhone}<input className="mt-1 h-10 w-full rounded border border-line bg-paper px-3 text-sm text-slate-500" disabled value={currentUser?.phone ?? ""} readOnly /></label>
+                      <label className="block text-xs font-medium text-slate-500">{t.profilePhone}<input className="mt-1 h-10 w-full rounded border border-line px-3 text-sm outline-none focus:border-brand disabled:bg-paper disabled:text-slate-500" disabled={!profileEditing} maxLength={40} value={profilePhoneValue} onChange={(event) => setProfilePhoneValue(event.target.value)} /></label>
                       <label className="block text-xs font-medium text-slate-500 sm:col-span-2">{t.profilePublicId}<input className="mt-1 h-10 w-full rounded border border-line px-3 text-sm outline-none focus:border-brand disabled:bg-paper disabled:text-slate-500" disabled={!profileEditing} maxLength={32} value={profilePublicId} onChange={(event) => { setProfileNotice(""); setProfilePublicId(event.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, "")); }} /><span className="mt-1 block text-[11px] font-normal text-slate-400">{t.profileIdHint}</span></label>
                       <label className="flex items-center gap-2 text-sm font-medium text-ink sm:col-span-2"><input checked={profileIsPublic} disabled={profileSaving} onChange={(event) => void handleToggleProfilePublic(event.target.checked)} type="checkbox" />{t.profilePublic}</label>
                       <label className="flex items-center gap-2 text-sm font-medium text-ink"><input checked={profileEmailPublic} disabled={profileSaving || !profileIsPublic || !currentUser?.email} onChange={(event) => void handleToggleProfileEmailPublic(event.target.checked)} type="checkbox" />{t.profileEmailPublic}</label>
-                      <label className="flex items-center gap-2 text-sm font-medium text-ink"><input checked={profilePhonePublic} disabled={profileSaving || !profileIsPublic || !currentUser?.phone} onChange={(event) => void handleToggleProfilePhonePublic(event.target.checked)} type="checkbox" />{t.profilePhonePublic}</label>
+                      <label className="flex items-center gap-2 text-sm font-medium text-ink"><input checked={profilePhonePublic} disabled={profileSaving || !profileIsPublic || !profilePhoneValue.trim()} onChange={(event) => void handleToggleProfilePhonePublic(event.target.checked)} type="checkbox" />{t.profilePhonePublic}</label>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="block text-xs font-medium text-slate-500">{t.profileNickname}<input className="mt-1 h-10 w-full rounded border border-line px-3 text-sm outline-none focus:border-brand disabled:bg-paper disabled:text-slate-500" disabled={!profileEditing} maxLength={60} value={profileNicknameValue} onChange={(event) => setProfileNicknameValue(event.target.value)} /></label>
@@ -5313,6 +5813,84 @@ export function ChatPrototype() {
                             <p className="mt-1 font-mono">{adminPasswordReset.temporaryPassword}</p>
                           </div>
                         ) : null}
+                        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                          <div className="rounded border border-line bg-white">
+                            <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+                              <p className="text-xs font-medium text-ink">{uiLanguage === "zh" ? "系统配置" : "System settings"}</p>
+                              <button className="rounded border border-line px-2 py-1 text-xs font-medium text-ink hover:border-brand disabled:opacity-60" disabled={adminSettingsSaving} onClick={() => void saveAdminSettings()} type="button">{adminSettingsSaving ? "..." : uiLanguage === "zh" ? "保存" : "Save"}</button>
+                            </div>
+                            {adminSettingsNotice ? <div className="mx-3 mt-3 rounded border border-brand/20 bg-brand/10 px-3 py-2 text-xs text-brand">{adminSettingsNotice}</div> : null}
+                            <div className="max-h-[34vh] space-y-3 overflow-auto p-3 text-xs">
+                              {Object.entries(adminSettings.reduce<Record<string, AdminSettingRow[]>>((groups, item) => {
+                                groups[item.group] = [...(groups[item.group] ?? []), item];
+                                return groups;
+                              }, {})).map(([group, items]) => (
+                                <div key={group} className="space-y-2">
+                                  <p className="font-medium text-ink">{group}</p>
+                                  {items.map((item) => (
+                                    <div key={item.key} className="block rounded border border-line bg-paper p-2">
+                                      <span className="flex items-center justify-between gap-2 text-slate-600">
+                                        <span className="font-medium text-ink">{item.label}</span>
+                                        <span className="rounded bg-white px-2 py-0.5 text-[11px] text-slate-500">{item.source === "admin" ? uiLanguage === "zh" ? "后台" : "Admin" : item.source === "env" ? ".env" : item.source === "default" ? uiLanguage === "zh" ? "默认" : "Default" : uiLanguage === "zh" ? "未设置" : "Empty"}</span>
+                                      </span>
+                                      {item.options?.length ? (
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          {item.options.map((option) => {
+                                            const selected = (adminSettingDrafts[item.key] ?? item.value ?? "") === option.value;
+                                            return (
+                                              <button key={`${item.key}-${option.value}`} className={`rounded border px-2 py-1 text-xs font-medium ${selected ? "border-brand bg-brand text-white" : "border-line bg-white text-ink hover:border-brand"}`} onClick={() => setAdminSettingDrafts((drafts) => ({ ...drafts, [item.key]: option.value }))} title={option.description ?? option.label} type="button">
+                                                {option.label}{selected ? ` · ${uiLanguage === "zh" ? "当前" : "Active"}` : ""}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      ) : (
+                                        <input className="mt-2 w-full rounded border border-line bg-white px-2 py-1 outline-none focus:border-brand" type={item.sensitive ? "password" : "text"} placeholder={item.sensitive && item.hasValue ? item.maskedValue || "******" : uiLanguage === "zh" ? item.description : item.label} value={adminSettingDrafts[item.key] ?? ""} onChange={(event) => setAdminSettingDrafts((drafts) => ({ ...drafts, [item.key]: event.target.value }))} />
+                                      )}
+                                      <span className="mt-1 block text-slate-400">{item.description}{item.activeOptionLabel ? ` · ${uiLanguage === "zh" ? "正在调用" : "Using"}: ${item.activeOptionLabel}` : ""}{item.restartRequired ? ` · ${uiLanguage === "zh" ? "保存后需重启/重新构建" : "restart/rebuild required"}` : ""}{item.bootstrapOnly ? ` · ${uiLanguage === "zh" ? "启动项" : "bootstrap"}` : ""}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="rounded border border-line bg-white">
+                            <div className="border-b border-line px-3 py-2">
+                              <p className="text-xs font-medium text-ink">{uiLanguage === "zh" ? "管理员账户" : "Administrators"}</p>
+                              <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                                <input className="rounded border border-line px-2 py-1 outline-none focus:border-brand" placeholder={uiLanguage === "zh" ? "邮箱" : "Email"} value={adminAccountForm.email} onChange={(event) => setAdminAccountForm((form) => ({ ...form, email: event.target.value }))} />
+                                <input className="rounded border border-line px-2 py-1 outline-none focus:border-brand" placeholder={uiLanguage === "zh" ? "电话" : "Phone"} value={adminAccountForm.phone} onChange={(event) => setAdminAccountForm((form) => ({ ...form, phone: event.target.value }))} />
+                                <input className="rounded border border-line px-2 py-1 outline-none focus:border-brand" placeholder={uiLanguage === "zh" ? "昵称" : "Nickname"} value={adminAccountForm.nickname} onChange={(event) => setAdminAccountForm((form) => ({ ...form, nickname: event.target.value }))} />
+                                <input className="rounded border border-line px-2 py-1 outline-none focus:border-brand" placeholder={uiLanguage === "zh" ? "初始密码" : "Password"} type="password" value={adminAccountForm.password} onChange={(event) => setAdminAccountForm((form) => ({ ...form, password: event.target.value }))} />
+                              </div>
+                              <div className="mt-2 grid gap-1 text-xs sm:grid-cols-2">
+                                {ADMIN_PERMISSION_OPTIONS.map((option) => (
+                                  <label key={option.code} className="flex items-center gap-2 text-slate-600">
+                                    <input type="checkbox" checked={adminAccountForm.adminPermissions.includes(option.code)} onChange={() => toggleAdminAccountFormPermission(option.code)} />
+                                    <span>{uiLanguage === "zh" ? option.zhLabel : option.label}</span>
+                                  </label>
+                                ))}
+                              </div>
+                              <button className="mt-2 rounded border border-line px-3 py-1.5 text-xs font-medium text-ink hover:border-brand disabled:opacity-60" disabled={adminAccountSaving} onClick={() => void createAdminAccount()} type="button">{adminAccountSaving ? "..." : uiLanguage === "zh" ? "新增管理员" : "Add administrator"}</button>
+                            </div>
+                            <div className="max-h-[34vh] overflow-auto text-xs">
+                              {adminAccounts.map((admin) => (
+                                <div key={admin.id} className="border-b border-line px-3 py-2 last:border-b-0">
+                                  <p className="font-medium text-ink">{admin.nickname} <span className="text-slate-400">{admin.email ?? admin.phone ?? admin.id}</span></p>
+                                  <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                                    {ADMIN_PERMISSION_OPTIONS.map((option) => (
+                                      <label key={`${admin.id}-${option.code}`} className="flex items-center gap-2 text-slate-600">
+                                        <input type="checkbox" disabled={adminActionUserId === admin.id} checked={(admin.adminPermissions ?? []).length === 0 || (admin.adminPermissions ?? []).includes(option.code)} onChange={(event) => void saveAdminPermissions(admin, option.code, event.target.checked)} />
+                                        <span>{uiLanguage === "zh" ? option.zhLabel : option.label}</span>
+                                      </label>
+                                    ))}
+                                  </div>
+                                  {(admin.adminPermissions ?? []).length === 0 ? <p className="mt-1 text-slate-400">{uiLanguage === "zh" ? "空权限列表表示兼容旧管理员：拥有全部权限。" : "Empty permissions means legacy full access."}</p> : null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
                         {adminSelectedUserChats ? (
                           <div className="mt-4 rounded border border-line bg-white">
                             <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-2">
@@ -5488,6 +6066,66 @@ export function ChatPrototype() {
           </section>
         </aside>
 
+        {welcomeOpen && !welcomeDismissed ? (
+          <section className={`${mobilePane === "list" ? "hidden lg:flex" : "flex"} min-h-0 flex-1 flex-col overflow-auto bg-[#f7f7f2]`}>
+            <header className="border-line flex h-16 shrink-0 items-center justify-between gap-3 border-b bg-white px-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <button aria-label="Back to chats" className="grid h-10 w-10 shrink-0 place-items-center rounded border border-line text-ink hover:border-brand lg:hidden" onClick={() => setMobilePane("list")} title="Back to chats" type="button">
+                  <ArrowLeft size={18} />
+                </button>
+                <Avatar name={currentUser?.nickname ?? "Me"} url={profileAvatarPreviewUrl || profileAvatarUrl || currentUser?.avatarUrl} />
+                <div className="min-w-0">
+                  <p className="truncate text-base font-semibold text-ink">{uiLanguage === "zh" ? `欢迎回来，${currentUser?.nickname ?? ""}` : `Welcome back, ${currentUser?.nickname ?? ""}`}</p>
+                  <p className="truncate text-sm text-slate-500">{uiLanguage === "zh" ? "今天可以从最近会话或联系人开始" : "Start from recent chats or contacts today"}</p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button className="grid h-10 w-10 place-items-center rounded border border-line text-ink hover:border-brand" onClick={() => { setFavoritesOpen(true); void loadFavorites(); }} type="button" aria-label={uiLanguage === "zh" ? "收藏" : "Favorites"} title={uiLanguage === "zh" ? "收藏" : "Favorites"}><Star size={18} /></button>
+                <button className="grid h-10 w-10 place-items-center rounded border border-line text-ink hover:border-brand" onClick={() => setWelcomeDismissed(true)} type="button" aria-label={uiLanguage === "zh" ? "进入聊天" : "Enter chats"} title={uiLanguage === "zh" ? "进入聊天" : "Enter chats"}><MessageCircle size={18} /></button>
+              </div>
+            </header>
+            <div className="grid min-h-0 flex-1 gap-8 px-5 py-8 lg:grid-cols-[minmax(0,1fr)_420px] lg:px-8 lg:py-10 xl:px-12">
+              <div className="flex max-w-3xl flex-col justify-center">
+                <div className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-line bg-white px-3 py-1.5 text-sm font-semibold text-brand shadow-sm"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />{uiLanguage === "zh" ? "登录成功 · Realtime connected" : "Signed in · Realtime connected"}</div>
+                <h2 className="text-4xl font-semibold leading-tight text-ink sm:text-5xl">{uiLanguage === "zh" ? "从一次清晰的跨语言对话开始。" : "Start with one clear cross-language conversation."}</h2>
+                <p className="mt-5 max-w-2xl text-base leading-7 text-slate-600">{uiLanguage === "zh" ? "Glimpse Chat 会保留原文、译文、文件和联系人上下文。你可以先打开最近会话，也可以直接搜索邮箱、手机号、昵称或 ID 开始新的沟通。" : "Glimpse Chat keeps original text, translations, files, and contact context together. Open a recent chat or search by email, phone, nickname, or ID to start a new conversation."}</p>
+                <div className="mt-7 grid gap-3 sm:flex sm:flex-wrap">
+                  <button className="inline-flex h-11 items-center justify-center gap-2 rounded bg-brand px-5 text-sm font-semibold text-white hover:bg-teal-800" onClick={() => { setWelcomeDismissed(true); if (filtered[0]) selectConversation(filtered[0].id); }} type="button"><MessageCircle size={17} />{uiLanguage === "zh" ? "打开最近会话" : "Open recent chat"}</button>
+                  <button className="inline-flex h-11 items-center justify-center gap-2 rounded border border-line bg-white px-5 text-sm font-semibold text-ink hover:border-brand" onClick={() => void startSelfConversation()} type="button"><MessageCircle size={17} />{uiLanguage === "zh" ? "给自己发消息" : "Message myself"}</button>
+                 <button className="inline-flex h-11 items-center justify-center gap-2 rounded border border-line bg-white px-5 text-sm font-semibold text-ink hover:border-brand" onClick={() => { setWelcomeDismissed(true); setTab("contacts"); setMobilePane("list"); }} type="button"><UserPlus size={17} />{uiLanguage === "zh" ? "添加联系人" : "Add contact"}</button>
+                  <button className="inline-flex h-11 items-center justify-center gap-2 rounded border border-line bg-white px-5 text-sm font-semibold text-ink hover:border-brand" onClick={() => { setWelcomeDismissed(true); setTab("contacts"); setGroupModalOpen(true); }} type="button"><Users size={17} />{uiLanguage === "zh" ? "创建群聊" : "Create group"}</button>
+                </div>
+                <div className="mt-7 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded border border-line bg-white p-4"><p className="text-2xl font-semibold text-ink">{filtered.length}</p><p className="mt-1 text-sm text-slate-500">{uiLanguage === "zh" ? "个会话等待查看" : "chats available"}</p></div>
+                  <div className="rounded border border-line bg-white p-4"><p className="text-2xl font-semibold text-ink">CN/EN</p><p className="mt-1 text-sm text-slate-500">{uiLanguage === "zh" ? "双语显示已启用" : "bilingual display"}</p></div>
+                  <div className="rounded border border-line bg-white p-4"><p className="text-2xl font-semibold text-ink">5m</p><p className="mt-1 text-sm text-slate-500">{uiLanguage === "zh" ? "语音消息上限" : "voice message limit"}</p></div>
+                </div>
+              </div>
+              <aside className="rounded border border-line bg-white shadow-xl">
+                <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-4">
+                  <div><p className="font-semibold text-ink">{uiLanguage === "zh" ? "工作区状态" : "Workspace status"}</p><p className="text-sm text-slate-500">{uiLanguage === "zh" ? "当前设置适合中英互译沟通" : "Current setup is ready for bilingual work"}</p></div>
+                  <span className="rounded-full border border-line px-3 py-1 text-sm font-semibold text-brand">{GLIMPSE_CHAT_VERSION}</span>
+                </div>
+                <div className="space-y-4 p-4">
+                  <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                    <div className="rounded border border-line bg-paper p-3"><p className="text-xs text-slate-500">Source</p><p className="font-semibold text-ink">{uiLanguage === "zh" ? "自动识别" : "Auto detect"}</p></div>
+                    <RefreshCw className="text-brand" size={18} />
+                    <div className="rounded border border-line bg-paper p-3"><p className="text-xs text-slate-500">Target</p><p className="font-semibold text-ink">{TRANSLATION_LANGUAGE_OPTIONS.find((item) => item.code === translationTargetLanguage)?.label ?? translationTargetLanguage}</p></div>
+                  </div>
+                  <div className="rounded border border-line bg-paper p-3 text-sm text-ink"><p>请在午饭前发送清关文件。</p><p className="mt-2 border-t border-line pt-2 text-brand">Please send the customs documents before lunch.</p></div>
+                  <div className="ml-auto max-w-[84%] rounded border border-brand/20 bg-brand/10 p-3 text-sm text-ink"><p>可以，我会在下午三点前发你最终版本。</p><p className="mt-2 border-t border-brand/20 pt-2 text-brand">Yes, I will send you the final version before 3 PM.</p></div>
+                </div>
+                <div className="divide-y divide-line border-t border-line text-sm">
+                  {[
+                    uiLanguage === "zh" ? "通知权限：浏览器通知已准备" : "Notifications: browser alerts are ready",
+                    uiLanguage === "zh" ? "资料完整度：昵称、头像、公开 ID 可用于搜索" : "Profile: nickname, avatar, and public ID support search",
+                    uiLanguage === "zh" ? "文件与语音：资料会在聊天资料中归档" : "Files and voice: media is archived in chat details"
+                  ].map((item) => <div key={item} className="flex items-center gap-3 px-4 py-3"><span className="grid h-6 w-6 place-items-center rounded-full bg-brand/10 text-brand"><Check size={14} /></span><span className="text-slate-600">{item}</span></div>)}
+                </div>
+              </aside>
+            </div>
+          </section>
+        ) : (
         <section className={`${mobilePane === "list" ? "hidden lg:flex" : "flex"} min-h-0 flex-1 flex-col bg-[#fbfbf7]`}>
           <header className="border-line flex h-16 items-center gap-2 border-b bg-white px-3 sm:px-4">
             <button aria-label="Back to chats" className="grid h-10 w-10 shrink-0 place-items-center rounded border border-line text-ink hover:border-brand lg:hidden" onClick={() => setMobilePane("list")} title="Back to chats" type="button">
@@ -5519,6 +6157,8 @@ export function ChatPrototype() {
             <div className="border-line flex shrink-0 items-center gap-2 border-t bg-paper px-4 py-2 text-sm">
               <span className="min-w-0 flex-1 text-slate-600">{selectedMessageIds.size} {uiLanguage === "zh" ? "已选" : "selected"}</span>
               <button className="rounded border border-line bg-white px-3 py-1.5 font-medium text-ink hover:border-brand" onClick={() => openForwardMessages(selectedMessagesForCurrentConversation())} type="button">{uiLanguage === "zh" ? "转发" : "Forward"}</button>
+              <button className="rounded border border-line bg-white px-3 py-1.5 font-medium text-ink hover:border-brand" onClick={() => openForwardMessages(selectedMessagesForCurrentConversation(), "merged")} type="button">{uiLanguage === "zh" ? "合并转发" : "Merge forward"}</button>
+              <button className="rounded border border-line bg-white px-3 py-1.5 font-medium text-ink hover:border-brand" onClick={() => void favoriteSelectedMessages()} type="button">{uiLanguage === "zh" ? "收藏" : "Favorite"}</button>
               <button className="rounded border border-line bg-white px-3 py-1.5 font-medium text-ink hover:border-brand" onClick={() => void copySelectedMessagesMerged()} type="button">{uiLanguage === "zh" ? "合并复制" : "Merge copy"}</button>
               <button className="rounded border border-coral bg-white px-3 py-1.5 font-medium text-coral hover:bg-coral/10" onClick={deleteSelectedMessagesLocally} type="button">{uiLanguage === "zh" ? "删除" : "Delete"}</button>
               <button className="rounded border border-line bg-white px-3 py-1.5 font-medium text-ink hover:border-brand" onClick={cancelMessageSelection} type="button">{uiLanguage === "zh" ? "取消" : "Cancel"}</button>
@@ -5568,10 +6208,15 @@ export function ChatPrototype() {
               const locationPayload = message.type === "text" ? parseLocationMessage(message.body) : null;
               const isTextMessage = message.type === "text" && !locationPayload;
               const translated = isTextMessage ? translations[manualTranslationTarget] : undefined;
+              const audioTranslated = message.type === "audio" ? translations[manualTranslationTarget] : undefined;
               const isTranslationLoading = translationLoading[message.id] ?? false;
+              const isVoiceTranscribing = voiceTranscriptionLoading[message.id] ?? false;
               const translationError = translationErrors[message.id];
               const showOriginal = isTextMessage && (messageDisplayMode === "original" || messageDisplayMode === "bilingual" || !translated);
               const showTranslation = isTextMessage && Boolean(translated) && (messageDisplayMode === "translated" || messageDisplayMode === "bilingual");
+              const showAudioTranscript = visibleTranscriptIds.has(message.id) && Boolean(message.transcript?.trim());
+              const showAudioOriginal = showAudioTranscript && (messageDisplayMode === "original" || messageDisplayMode === "bilingual" || !audioTranslated);
+              const showAudioTranslation = showAudioTranscript && Boolean(audioTranslated) && (messageDisplayMode === "translated" || messageDisplayMode === "bilingual");
               const messageMediaUrl = mediaPreviewUrl(message);
               const messageDownload = mediaDownloadUrl(message);
               const senderAvatarUrl = mine ? (profileAvatarPreviewUrl || profileAvatarUrl || currentUser?.avatarUrl) : (selected.type === "group" ? groupMembers.find((member) => member.user.id === message.senderId)?.user.avatarUrl : selected.avatarUrl);
@@ -5613,9 +6258,14 @@ export function ChatPrototype() {
                           <p className="truncate text-sm">{message.body ?? "Audio"}</p>
                           <div className="mt-1 flex flex-wrap items-center gap-3 text-xs">
                             <button className="underline-offset-2 hover:underline" onClick={() => setPreviewMedia({ url: messageMediaUrl, type: "audio", name: message.body })} type="button">{t.mediaOpen}</button>
-                            <button className="underline-offset-2 hover:underline" onClick={() => toggleVoiceTranscript(message)} type="button">{visibleTranscriptIds.has(message.id) ? t.voiceTranscriptHide : t.voiceTranscript}</button>
+                            <button className="underline-offset-2 hover:underline disabled:opacity-60" disabled={isVoiceTranscribing} onClick={() => void toggleVoiceTranscript(message)} type="button">{isVoiceTranscribing ? (uiLanguage === "zh" ? "转写中..." : "Transcribing...") : visibleTranscriptIds.has(message.id) ? t.voiceTranscriptHide : t.voiceTranscript}</button>
                           </div>
-                          {visibleTranscriptIds.has(message.id) && message.transcript ? <p className="mt-2 rounded bg-white/70 px-2 py-1 text-sm text-ink">{message.transcript}</p> : null}
+                          {showAudioTranscript ? (
+                            <div className="mt-2 space-y-1 rounded bg-white/70 px-2 py-1 text-sm text-ink">
+                              {showAudioOriginal ? <p className="whitespace-pre-wrap break-words">{message.transcript}</p> : null}
+                              {showAudioTranslation ? <p className={`${messageDisplayMode === "bilingual" ? "border-t border-line pt-1 text-slate-600" : ""} whitespace-pre-wrap break-words`}>{audioTranslated}</p> : null}
+                            </div>
+                          ) : null}
                           <audio className="mt-2 w-full" src={messageMediaUrl} controls preload="metadata" />
                         </div>
                         <a className="mt-1 shrink-0" href={messageDownload} download={message.body ?? "download"} title={t.downloadOriginal}><Download size={17} /></a>
@@ -5661,12 +6311,12 @@ export function ChatPrototype() {
                         </button>
                       ) : null}
                       {!message.revokedAt && isTextMessage && message.body?.trim() ? (
-                        <button className={`grid h-6 w-6 place-items-center rounded ${speakingMessageKey === message.id + ":original" ? mine ? "bg-white/15 text-white" : "bg-paper text-ink" : mine ? "text-white/70 hover:bg-white/10 hover:text-white" : "text-slate-400 hover:bg-paper hover:text-ink"}`} onClick={() => readOriginalMessage(message)} title={messageActionLabels[uiLanguage].readOriginal} aria-label={messageActionLabels[uiLanguage].readOriginal} type="button">
+                        <button className={`grid h-6 w-6 place-items-center rounded ${speakingMessageKey === message.id + ":original" ? mine ? "bg-white/15 text-white" : "bg-paper text-ink" : mine ? "text-white/70 hover:bg-white/10 hover:text-white" : "text-slate-400 hover:bg-paper hover:text-ink"}`} onClick={() => void readOriginalMessage(message)} title={messageActionLabels[uiLanguage].readOriginal} aria-label={messageActionLabels[uiLanguage].readOriginal} type="button">
                           <Volume2 size={13} />
                         </button>
                       ) : null}
                       {!message.revokedAt && translated ? (
-                        <button className={`grid h-6 w-6 place-items-center rounded ${speakingMessageKey === message.id + ":translation:" + manualTranslationTarget ? mine ? "bg-white/15 text-white" : "bg-paper text-ink" : mine ? "text-white/70 hover:bg-white/10 hover:text-white" : "text-slate-400 hover:bg-paper hover:text-ink"}`} onClick={() => readTranslatedMessage(message, translated, manualTranslationTarget)} title={messageActionLabels[uiLanguage].readTranslation} aria-label={messageActionLabels[uiLanguage].readTranslation} type="button">
+                        <button className={`grid h-6 w-6 place-items-center rounded ${speakingMessageKey === message.id + ":translation:" + manualTranslationTarget ? mine ? "bg-white/15 text-white" : "bg-paper text-ink" : mine ? "text-white/70 hover:bg-white/10 hover:text-white" : "text-slate-400 hover:bg-paper hover:text-ink"}`} onClick={() => void readTranslatedMessage(message, translated, manualTranslationTarget)} title={messageActionLabels[uiLanguage].readTranslation} aria-label={messageActionLabels[uiLanguage].readTranslation} type="button">
                           <Volume2 size={13} />
                         </button>
                       ) : null}
@@ -5683,6 +6333,9 @@ export function ChatPrototype() {
                         <>
                           <button className={`grid h-6 w-6 place-items-center rounded ${mine ? "text-white/70 hover:bg-white/10 hover:text-white" : "text-slate-400 hover:bg-paper hover:text-ink"}`} onClick={() => openForwardMessages([message])} title={uiLanguage === "zh" ? "转发" : "Forward"} aria-label={uiLanguage === "zh" ? "转发" : "Forward"} type="button">
                             <Send size={13} />
+                          </button>
+                          <button className="grid h-6 w-6 place-items-center rounded text-current opacity-80 hover:opacity-100" onClick={() => void toggleFavoriteMessage(message)} title={favoriteMessageIds.has(message.id) ? uiLanguage === "zh" ? "取消收藏" : "Remove favorite" : uiLanguage === "zh" ? "收藏" : "Favorite"} aria-label={favoriteMessageIds.has(message.id) ? uiLanguage === "zh" ? "取消收藏" : "Remove favorite" : uiLanguage === "zh" ? "收藏" : "Favorite"} type="button">
+                            <Star fill={favoriteMessageIds.has(message.id) ? "currentColor" : "none"} size={13} />
                           </button>
                           <button className={`grid h-6 w-6 place-items-center rounded ${mine ? "text-white/70 hover:bg-white/10 hover:text-white" : "text-slate-400 hover:bg-paper hover:text-ink"}`} onClick={() => setReminderForMessage(message)} title={messageActionLabels[uiLanguage].remind} aria-label={messageActionLabels[uiLanguage].remind} type="button">
                             <Bell size={13} />
@@ -5719,12 +6372,10 @@ export function ChatPrototype() {
           </div>
 
           <form className="border-line shrink-0 border-t bg-white px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3" onSubmit={sendMessage}>
-            {voiceRecording || voiceTranscriptDraft ? <div className="border-line border-t bg-white px-3 py-2 text-xs text-slate-500">{voiceRecording ? t.voiceRecording : t.voiceTranscript}: {voiceTranscriptDraft || "..."}</div> : null}
             {pendingVoicePreview ? (
               <div className="mb-3 rounded border border-line bg-paper p-3 text-xs text-slate-600">
                 <p className="mb-2 font-medium text-ink">{t.voicePreviewReady}</p>
                 <audio className="w-full" src={pendingVoicePreview.url} controls />
-                {pendingVoicePreview.transcript ? <p className="mt-2 rounded bg-white px-2 py-1 text-sm text-ink">{pendingVoicePreview.transcript}</p> : null}
                 <div className="mt-3 flex justify-end gap-2">
                   <button className="rounded border border-line px-3 py-2 font-medium text-ink hover:border-brand" onClick={cancelPendingVoice} type="button">{t.voiceCancel}</button>
                   <button className="rounded bg-brand px-3 py-2 font-medium text-white hover:bg-teal-800" onClick={() => void sendPendingVoice()} type="button">{t.voiceSendConfirm}</button>
@@ -5759,6 +6410,7 @@ export function ChatPrototype() {
                   <button className="flex items-center gap-2 rounded px-3 py-2 text-left text-ink hover:bg-paper disabled:opacity-50" disabled={!selectedExists || mediaUploading} onClick={() => { setComposerMenuOpen(false); setLocationModalOpen(true); }} type="button"><MapPin size={17} />{uiLanguage === "zh" ? "发送位置" : "Send location"}</button>
                   <button className="flex items-center gap-2 rounded px-3 py-2 text-left text-ink hover:bg-paper disabled:opacity-50" disabled={!selectedExists || Boolean(activeCall)} onClick={() => { setComposerMenuOpen(false); void startCall("audio"); }} type="button"><Phone size={17} />{callLabels[uiLanguage].audioCall}</button>
                   <button className="flex items-center gap-2 rounded px-3 py-2 text-left text-ink hover:bg-paper disabled:opacity-50" disabled={!selectedExists || Boolean(activeCall)} onClick={() => { setComposerMenuOpen(false); void startCall("video"); }} type="button"><Video size={17} />{callLabels[uiLanguage].videoCall}</button>
+                  <button className="flex items-center gap-2 rounded px-3 py-2 text-left text-ink hover:bg-paper" onClick={() => { setComposerMenuOpen(false); setFavoritesOpen(true); void loadFavorites(); }} type="button"><Star size={17} />{uiLanguage === "zh" ? "收藏" : "Favorites"}</button>
                 </div>
               ) : null}
               <div className="flex items-end gap-2">
@@ -5781,6 +6433,7 @@ export function ChatPrototype() {
             </div>
           </form>
         </section>
+        )}
         {locationModalOpen ? (
           <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4" onClick={() => setLocationModalOpen(false)}>
             <div className="w-full max-w-md rounded bg-white p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
@@ -5856,7 +6509,7 @@ export function ChatPrototype() {
               <div className="flex items-center justify-between border-b border-line px-4 py-3">
                 <div className="min-w-0">
                   <p className="font-semibold text-ink">{uiLanguage === "zh" ? "转发消息" : "Forward message"}</p>
-                  <p className="text-xs text-slate-500">{forwardMessages.length} {uiLanguage === "zh" ? "???" : "messages"}</p>
+                  <p className="text-xs text-slate-500">{forwardMessages.length} {uiLanguage === "zh" ? "条消息" : "messages"}</p>
                 </div>
                 <button className="rounded border border-line px-3 py-1.5 text-xs font-medium text-ink hover:border-brand" onClick={() => setForwardMessages([])} type="button">{t.adminClose}</button>
               </div>
@@ -5871,6 +6524,40 @@ export function ChatPrototype() {
                     </span>
                   </button>
                 ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {favoritesOpen ? (
+          <div className="fixed inset-0 z-50 bg-slate-950/45 p-4" onClick={() => setFavoritesOpen(false)}>
+            <div className="mx-auto mt-10 flex max-h-[82vh] w-full max-w-2xl flex-col rounded bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-line px-4 py-3">
+                <div>
+                  <p className="font-semibold text-ink">{uiLanguage === "zh" ? "收藏" : "Favorites"}</p>
+                  <p className="text-xs text-slate-500">{uiLanguage === "zh" ? "跨设备同步的收藏消息" : "Synced favorite messages"}</p>
+                </div>
+                <button className="rounded border border-line px-3 py-1.5 text-xs font-medium text-ink hover:border-brand" onClick={() => setFavoritesOpen(false)} type="button">{t.adminClose}</button>
+              </div>
+              <div className="border-b border-line px-4 py-3">
+                <label className="flex h-10 items-center gap-2 rounded border border-line bg-paper px-3 text-sm text-slate-500">
+                  <Search size={16} />
+                  <input className="w-full bg-transparent text-ink outline-none" placeholder={uiLanguage === "zh" ? "搜索收藏内容或标签" : "Search favorites or tags"} value={favoriteSearchQuery} onChange={(event) => setFavoriteSearchQuery(event.target.value)} />
+                </label>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto p-4">
+                {favoritesLoading ? <p className="rounded border border-line bg-paper p-4 text-sm text-slate-500">{t.loadingMessages}</p> : null}
+                {!favoritesLoading && favoriteMessages.length === 0 ? <p className="rounded border border-line bg-paper p-4 text-sm text-slate-500">{uiLanguage === "zh" ? "暂无收藏消息" : "No favorite messages yet."}</p> : null}
+                {!favoritesLoading && favoriteMessages.length > 0 && filteredFavoriteMessages.length === 0 ? <p className="rounded border border-line bg-paper p-4 text-sm text-slate-500">{uiLanguage === "zh" ? "没有匹配的收藏" : "No matching favorites."}</p> : null}
+                <div className="space-y-2">
+                  {filteredFavoriteMessages.map((item) => (
+                    <button key={item.id} className="block w-full rounded border border-line bg-white p-3 text-left hover:border-brand" onClick={() => jumpToFavoriteMessage(item)} type="button">
+                      <p className="truncate text-xs text-slate-500">{item.conversation?.title ?? (uiLanguage === "zh" ? "聊天" : "Chat")} · {item.message.senderName ?? item.message.senderId} · {formatMessageTime(item.message.createdAt)}</p>
+                      <p className="mt-1 line-clamp-2 text-sm text-ink">{mediaPreviewLabel(item.message)}</p>
+                      {(item.tags ?? []).length > 0 ? <p className="mt-2 flex flex-wrap gap-1">{(item.tags ?? []).map((tag) => <span key={tag} className="rounded bg-paper px-1.5 py-0.5 text-xs text-brand">#{tag}</span>)}</p> : null}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -6190,6 +6877,54 @@ function BlockToggle({ checked }: { checked: boolean }) {
 function UnreadBadge({ count }: { count: number }) {
   return <span className="grid h-6 min-w-6 place-items-center rounded-full bg-coral px-2 text-xs font-semibold text-white">{count}</span>;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

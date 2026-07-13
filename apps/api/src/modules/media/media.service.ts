@@ -1,7 +1,7 @@
-import { BadRequestException, Injectable, NotFoundException, StreamableFile } from "@nestjs/common";
+﻿import { BadRequestException, Injectable, NotFoundException, StreamableFile } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { MEDIA_LIMITS, type ArchivePreviewEntry, type ArchivePreviewResponse, type UploadedMediaResponse } from "@glimpse/shared";
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { UploadMediaDto } from "./dto/upload-media.dto";
@@ -58,7 +58,10 @@ export class MediaService {
   constructor(private readonly config: ConfigService) {
     const cwd = process.cwd();
     const repoRoot = cwd.endsWith(join("apps", "api")) ? resolve(cwd, "..", "..") : cwd;
-    const primaryStorageDir = resolve(this.config.get<string>("MEDIA_STORAGE_DIR", join(repoRoot, "99_输出结果", "glimpse-media-uploads")));
+    const configuredStorageDir = this.config.get<string>("MEDIA_STORAGE_DIR")
+      ?? this.config.get<string>("MEDIA_UPLOAD_DIR")
+      ?? join(repoRoot, "99_输出结果", "glimpse-media-uploads");
+    const primaryStorageDir = resolve(configuredStorageDir);
     const legacyApiStorageDir = resolve(repoRoot, "apps", "api", "99_输出结果", "glimpse-media-uploads");
     const cwdStorageDir = resolve(cwd, "99_输出结果", "glimpse-media-uploads");
     this.storageDir = primaryStorageDir;
@@ -100,8 +103,10 @@ export class MediaService {
     const safeName = basename(fileName);
     if (safeName !== fileName) throw new NotFoundException("Media file was not found.");
     const filePath = this.resolveExistingFile(safeName);
+    const fileSize = statSync(filePath).size;
     const contentType = this.mimeForExtension(extname(safeName).toLowerCase());
     response.setHeader("Content-Type", contentType);
+    response.setHeader("Content-Length", String(fileSize));
     response.setHeader("X-Content-Type-Options", "nosniff");
     const downloadName = this.cleanFileName(originalName || safeName);
     response.setHeader("Content-Disposition", this.contentDisposition(downloadName, forceDownload ? "attachment" : "inline"));
@@ -115,6 +120,27 @@ export class MediaService {
     const filePath = this.resolveExistingFile(safeName);
     const buffer = readFileSync(filePath);
     return this.readZipDirectory(buffer, this.cleanFileName(originalName || safeName));
+  }
+
+  readMediaFileByUrl(mediaUrl: string) {
+    let parsed: URL;
+    try {
+      parsed = new URL(mediaUrl, "http://local");
+    } catch {
+      throw new BadRequestException("Invalid media URL.");
+    }
+    if (!parsed.pathname.startsWith("/media/files/")) throw new BadRequestException("Only uploaded media files can be processed.");
+    const fileName = decodeURIComponent(parsed.pathname.replace("/media/files/", ""));
+    const safeName = basename(fileName);
+    if (!safeName || safeName !== fileName) throw new NotFoundException("Media file was not found.");
+    const filePath = this.resolveExistingFile(safeName);
+    const originalName = this.cleanFileName(parsed.searchParams.get("name") || safeName);
+    const extension = extname(safeName).toLowerCase();
+    return {
+      buffer: readFileSync(filePath),
+      fileName: originalName,
+      mimeType: this.mimeForExtension(extension)
+    };
   }
 
   private resolveExistingFile(fileName: string) {
@@ -190,3 +216,4 @@ export class MediaService {
     return `${disposition}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
   }
 }
+

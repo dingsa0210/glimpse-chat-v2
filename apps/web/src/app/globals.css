@@ -49,7 +49,7 @@ textarea {
 
 @keyframes glimpse-notice-fade {
   0%,
-  78% {
+  84% {
     opacity: 1;
   }
   100% {
@@ -58,7 +58,7 @@ textarea {
 }
 
 .glimpse-notice-fade {
-  animation: glimpse-notice-fade 3s ease-in forwards;
+  animation: glimpse-notice-fade 8s ease-in forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -70,3 +70,4 @@ textarea {
     animation: none;
   }
 }
+

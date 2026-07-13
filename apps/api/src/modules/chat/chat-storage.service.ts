@@ -1,8 +1,10 @@
-import type { MessagePayload, TranslationLanguage } from "@glimpse/shared";
+﻿import type { MessagePayload, TranslationLanguage } from "@glimpse/shared";
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { TranslationService } from "../translation/translation.service";
+import { MediaService } from "../media/media.service";
+import { VoiceTranscriptionService } from "../voice/voice-transcription.service";
 
 type StoredMessage = MessagePayload;
 type HistoryOptions = {
@@ -125,6 +127,40 @@ export class ChatStorageService {
     if (!updated) throw new NotFoundException("Message not found.");
     return this.toPayload(updated);
   }
+  async transcribeVoiceMessage(
+    conversationId: string,
+    messageId: string,
+    userId: string,
+    targetLanguage: TranslationLanguage,
+    media: MediaService,
+    voice: VoiceTranscriptionService
+  ) {
+    if (this.mode !== "prisma") {
+      throw new BadRequestException("Voice transcription requires persistent storage.");
+    }
+    await this.ensureConversationMember(conversationId, userId);
+    const row = await this.prisma.message.findFirst({ where: { id: messageId, conversationId }, include: { translations: true } });
+    if (!row) throw new NotFoundException("Message not found.");
+    if (row.type !== "AUDIO" || !row.mediaUrl) throw new BadRequestException("Only audio messages can be transcribed.");
+
+    const transcript = row.transcript?.trim() || await voice.transcribeAudio({ ...media.readMediaFileByUrl(row.mediaUrl), mediaUrl: row.mediaUrl });
+    if (!row.transcript?.trim()) await this.prisma.message.update({ where: { id: messageId }, data: { transcript } });
+
+    const hasTranslation = row.translations.some((item) => item.language.toLowerCase() === targetLanguage && item.body.trim());
+    if (!hasTranslation) {
+      const translated = await voice.translateTranscript(transcript, targetLanguage);
+      if (translated) await this.prisma.messageTranslation.upsert({
+        where: { messageId_language: { messageId, language: targetLanguage } },
+        update: { body: translated },
+        create: { messageId, language: targetLanguage, body: translated }
+      });
+    }
+
+    const updated = await this.prisma.message.findUnique({ where: { id: messageId }, include: { translations: true } });
+    if (!updated) throw new NotFoundException("Message not found.");
+    return this.toPayload(updated);
+  }
+
   async saveMessage(message: MessagePayload, userId: string) {
     const normalized = normalizeMessage(message);
     if (this.mode === "prisma") {
@@ -287,6 +323,7 @@ export class ChatStorageService {
     });
   }
 }
+
 
 
 
