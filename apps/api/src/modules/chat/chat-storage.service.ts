@@ -57,6 +57,16 @@ export class ChatStorageService {
     if (!membership) throw new ForbiddenException("You are not a member of this conversation.");
   }
 
+  async getConversationMemberIds(conversationId: string, userId: string) {
+    if (this.mode !== "prisma") return [userId];
+    await this.ensureConversationMember(conversationId, userId);
+    const members = await this.prisma.conversationMember.findMany({
+      where: { conversationId },
+      select: { userId: true }
+    });
+    return members.map((member) => member.userId);
+  }
+
   async getHistory(conversationId: string, userId: string, options: HistoryOptions = {}) {
     const page = await this.getHistoryPage(conversationId, userId, options);
     return page.messages;

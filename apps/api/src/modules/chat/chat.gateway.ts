@@ -137,7 +137,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         },
         user.id
       );
-      this.server.to(`conversation:${message.conversationId}`).emit("message:new", message);
+      const memberIds = await this.storage.getConversationMemberIds(message.conversationId, user.id);
+      let recipients = this.server.to(`conversation:${message.conversationId}`);
+      for (const memberId of memberIds) recipients = recipients.to(`user:${memberId}`);
+      recipients.emit("message:new", message);
       return { ok: true, messageId: message.id };
     } catch (error) {
       throw new WsException(error instanceof Error ? error.message : "Could not send message.");

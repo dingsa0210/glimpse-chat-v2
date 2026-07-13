@@ -3231,9 +3231,10 @@ export function ChatPrototype() {
         if (settled) return;
         settled = true;
         setMessageStatuses((current) => ({ ...current, [message.id]: "failed" }));
+        setNotice(t.requestTimeout);
       }, 8000);
 
-      socketRef.current.emit("message:send", message, (response?: { ok?: boolean; messageId?: string; error?: string }) => {
+      socketRef.current.emit("message:send", message, (response?: { ok?: boolean; messageId?: string; error?: string; message?: string }) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeout);
@@ -3253,7 +3254,7 @@ export function ChatPrototype() {
           return;
         }
         setMessageStatuses((current) => ({ ...current, [message.id]: response?.ok ? mergeMessageStatus(current[message.id], "sent") : "failed" }));
-        if (response?.ok) setNotice(t.sent);
+        setNotice(response?.ok ? t.sent : extractErrorMessage(response?.error || response?.message || t.requestFailed, t.requestFailed));
       });
       return;
     }
@@ -4056,7 +4057,6 @@ export function ChatPrototype() {
       setMessageStatuses((current) => ({ ...current, [message.id]: "sending" }));
       emitMessage(message);
       setConversations((items) => items.map((item) => (item.id === selected.id ? { ...item, preview: mediaPreviewLabel(message), time: formatConversationTime(message.createdAt), latestMessageAt: message.createdAt } : item)));
-      setNotice(t.sent);
       setReplyingToMessage(null);
     } catch (error) {
       setFailedMediaFile(file);
