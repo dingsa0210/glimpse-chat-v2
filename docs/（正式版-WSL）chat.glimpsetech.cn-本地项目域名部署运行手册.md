@@ -272,6 +272,19 @@ sudo apt-get install -y git openssh-client curl ca-certificates rsync jq postgre
 
 长期无人值守场景优先选择 WSL 内独立 Docker Engine，避免 Docker Desktop 尚未启动时隧道已经上线但本地端口不可用。
 
+### 7.3 两种 Engine 模式的差异
+
+| 项目 | WSL 内独立 Docker Engine | Docker Desktop Engine |
+| --- | --- | --- |
+| daemon 位置 | 目标 WSL 发行版内 | Docker Desktop 管理的专用 WSL 后端 |
+| WSL 中的 `docker.service` | 存在，可由 systemd 管理 | 通常不存在或不是实际 daemon |
+| systemd 依赖方式 | `Requires=docker.service` | 轮询 `docker info` 等待 Desktop socket |
+| Windows 未登录运行 | 更适合 | 必须实测当前 Desktop 版本和计划任务行为 |
+| Engine 重启 | systemd 可直接监控 | 由 Docker Desktop/Windows 用户会话管理 |
+| 适用场景 | 24×7、无人值守 | 日常桌面使用、通常有人登录 |
+
+两种方案只能选择一种。若 `docker info` 连接的是 Docker Desktop，就不要同时 `systemctl enable --now docker` 启动另一套 daemon；否则可能出现镜像、容器和 volume 分别存在于两套 Engine 中，造成“命令显示正常但业务数据不见了”的误判。
+
 ## 8. 部署源码与根环境文件
 
 ### 8.1 克隆代码
@@ -570,15 +583,20 @@ ssh-keygen -lf "$HOME/.ssh/known_hosts_chat_tunnel"
 
 ## 14. 使用 systemd 守护 Docker Compose
 
-以下示例假定：
+### 14.1 两种模式的共同前提
+
+以下示例均假定：
 
 - 项目路径为 `/srv/glimpse-chat-v2`；
 - WSL 用户为 `<wsl-user>`；
-- 使用 WSL 内独立 Docker Engine。
+- 镜像已通过 `docker compose build api web` 构建；
+- Compose 文件中的容器继续使用 `restart: unless-stopped`。
 
-必须把 `<wsl-user>` 替换为 `id -un` 的真实结果。
+必须把 `<wsl-user>` 替换为 `id -un` 的真实结果，并使用 `command -v docker` 确认 Docker CLI 的绝对路径。两种 Engine 模式使用不同的 `glimpse-chat.service`，不要把两个 unit 同时安装。
 
-创建 `/etc/systemd/system/glimpse-chat.service`：
+### 14.2 方案一：WSL 内独立 Docker Engine
+
+独立 Engine 由 WSL systemd 管理，因此应用 unit 可以直接声明依赖 `docker.service`。创建 `/etc/systemd/system/glimpse-chat.service`：
 
 ```ini
 [Unit]
@@ -600,13 +618,71 @@ TimeoutStartSec=0
 WantedBy=multi-user.target
 ```
 
-确认 `docker` 的绝对路径：
+确认依赖和路径：
 
 ```sh
 command -v docker
+systemctl is-enabled docker
+systemctl is-active docker
 ```
 
-若不是 `/usr/bin/docker`，修改 unit。Docker Desktop 用户应删除 `Requires=docker.service`，并把 `After` 中的 `docker.service` 去掉。
+若 Docker CLI 不是 `/usr/bin/docker`，修改 unit。独立 Engine 模式下 `docker.service` 必须为 enabled/active。
+
+### 14.3 方案二：Docker Desktop Engine
+
+Docker Desktop 的 daemon 不由目标 WSL 中的 `docker.service` 管理，因此不能只删除 `Requires=docker.service` 就结束。应用 unit 必须主动等待 Docker Desktop socket 可用。
+
+创建同名 `/etc/systemd/system/glimpse-chat.service`，但内容使用下面这一版：
+
+```ini
+[Unit]
+Description=Glimpse Chat Docker Compose stack via Docker Desktop
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=<wsl-user>
+WorkingDirectory=/srv/glimpse-chat-v2
+ExecStartPre=/usr/bin/bash -c 'for i in {1..120}; do /usr/bin/docker info >/dev/null 2>&1 && exit 0; sleep 5; done; exit 1'
+ExecStart=/usr/bin/docker compose up -d --no-build
+ExecStop=-/usr/bin/docker compose stop
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=650
+
+[Install]
+WantedBy=multi-user.target
+```
+
+这版 unit 的行为是：
+
+- 最多等待约 10 分钟，直到 `docker info` 能连接 Docker Desktop Engine；
+- Docker Desktop 尚未启动时不提前执行 Compose；
+- 等待超时后由 systemd 按 `Restart=on-failure` 重试；
+- `ExecStop` 前的 `-` 表示 Windows/WSL 关机时即使 Desktop socket 已消失，也不把停止失败视为 unit 故障；
+- 不声明 `docker.service`，因为它不是当前容器实际使用的 daemon。
+
+Docker Desktop 启动后检查：
+
+```sh
+docker context show
+docker info
+docker compose ps
+```
+
+若 Docker Desktop 自身重启，Compose 中的 `restart: unless-stopped` 应恢复现有容器。若容器没有自动恢复，执行：
+
+```sh
+sudo systemctl restart glimpse-chat.service
+```
+
+不要为了让 unit 变为 active 而在 WSL 中再启动一套独立 `docker.service`；这会切换到不同的镜像和 volume 存储。
+
+### 14.4 加载所选方案
+
+无论选择哪一版 unit，都执行：
 
 加载服务：
 
@@ -664,6 +740,15 @@ journalctl -u glimpse-tunnel.service -n 100 --no-pager
 
 systemd 会在网络变化、SSH 连接断开或远端重启后重试。`ExecStartPre` 可避免本地服务尚未健康时就把云端端口暴露为“已监听但实际 502”的半失效状态。
 
+该隧道 unit 同时适用于两种 Docker Engine。它不直接依赖 `docker.service`，只依赖所选版本的 `glimpse-chat.service`，并通过 Web/API 健康接口判断容器是否真正可用。
+
+在 Docker Desktop 模式下，如果 Desktop Engine 运行期间重启，SSH 进程本身可能保持连接，公网会短暂返回 502，直到 `restart: unless-stopped` 恢复容器。恢复后现有隧道会重新连通本地端口；若没有恢复，可依次执行：
+
+```sh
+sudo systemctl restart glimpse-chat.service
+sudo systemctl restart glimpse-tunnel.service
+```
+
 ## 16. Windows 开机后自动唤醒 WSL
 
 即使 systemd unit 已启用，Windows 重启后也必须先启动对应 WSL 发行版。使用“任务计划程序”创建任务：
@@ -693,6 +778,54 @@ wsl -d Ubuntu-24.04 -- systemctl is-active glimpse-tunnel.service
 ```
 
 如果使用 Docker Desktop，还需验证 Windows 未交互登录时 Docker Desktop 是否已启动；否则建议改用 WSL 内独立 Docker Engine。
+
+### 16.1 WSL 内独立 Docker Engine 的启动顺序
+
+此模式的启动链路为：
+
+```text
+Windows 任务计划 → 唤醒 WSL → systemd → docker.service → glimpse-chat.service → glimpse-tunnel.service
+```
+
+Windows 任务只需唤醒目标发行版。由于 Docker daemon 在 WSL 内，systemd 可以完整管理依赖和失败重试。冷启动后检查：
+
+```powershell
+wsl -d Ubuntu-24.04 -- systemctl is-active docker
+wsl -d Ubuntu-24.04 -- systemctl is-active glimpse-chat.service
+wsl -d Ubuntu-24.04 -- systemctl is-active glimpse-tunnel.service
+```
+
+### 16.2 Docker Desktop Engine 的启动顺序
+
+此模式的启动链路为：
+
+```text
+Windows 启动/用户登录 → Docker Desktop Engine → WSL Integration socket → WSL systemd → glimpse-chat.service 等待 docker info → glimpse-tunnel.service
+```
+
+Windows 侧需要同时满足：
+
+1. Docker Desktop 设置中启用 `Start Docker Desktop when you sign in`；
+2. 目标 Ubuntu 已启用 WSL Integration；
+3. WSL 唤醒任务由安装该发行版的同一 Windows 用户运行；
+4. 若需要无人登录启动，另建任务启动 `C:\Program Files\Docker\Docker\Docker Desktop.exe`，并在真实冷启动环境验证当前 Docker Desktop 版本是否支持该运行方式；
+5. WSL 唤醒任务建议比 Docker Desktop 启动延迟 60–120 秒，但即使顺序反过来，`glimpse-chat.service` 也会通过 `docker info` 等待并重试。
+
+Docker Desktop 是用户级桌面应用，不同版本对“无人登录运行”的行为可能不同。不能只在已登录桌面中测试后就认定无人值守可靠。必须执行两次验收：
+
+- Windows 重启并正常登录，确认 Desktop、容器和隧道自动恢复；
+- Windows 重启后不手动打开 Docker Desktop，按实际无人值守方式确认服务是否恢复。
+
+Docker Desktop 模式下检查：
+
+```powershell
+wsl -d Ubuntu-24.04 -- docker info
+wsl -d Ubuntu-24.04 -- docker compose -f /srv/glimpse-chat-v2/docker-compose.yml ps
+wsl -d Ubuntu-24.04 -- systemctl is-active glimpse-chat.service
+wsl -d Ubuntu-24.04 -- systemctl is-active glimpse-tunnel.service
+```
+
+如果第二项无人登录验收无法通过，应改用 WSL 内独立 Docker Engine，而不是取消健康检查或让隧道在容器未启动时提前上线。
 
 ## 17. 正式切换流程
 
