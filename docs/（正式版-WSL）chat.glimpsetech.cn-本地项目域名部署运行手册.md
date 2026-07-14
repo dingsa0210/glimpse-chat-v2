@@ -695,6 +695,52 @@ systemctl status glimpse-chat.service --no-pager
 
 `docker compose` 的容器还配置了 `restart: unless-stopped`；systemd unit 用于确保 WSL 启动时主动恢复整个 Compose project，而不是仅依赖 daemon 曾经记录的容器状态。
 
+### 14.5 为什么 `glimpse-chat.service` 显示 `active (exited)`
+
+按本手册配置后，执行 `systemctl status glimpse-chat.service` 看到以下状态是正常现象：
+
+```text
+Active: active (exited)
+```
+
+它不表示 Docker 容器已经退出。原因是 unit 使用了以下组合：
+
+```ini
+Type=oneshot
+ExecStart=/usr/bin/docker compose up -d --no-build
+RemainAfterExit=yes
+```
+
+执行链路是：
+
+```text
+systemd 执行 docker compose up -d
+  → Docker Engine 在后台启动容器
+  → docker compose 命令成功退出
+  → systemd 通过 RemainAfterExit=yes 保持 unit 为 active
+  → 实际容器继续由 Docker Engine 管理
+```
+
+因此这里存在两层互补而非冲突的管理关系：
+
+| 管理层 | 职责 | 应使用的检查命令 |
+| --- | --- | --- |
+| systemd | WSL 启动时执行整套 Compose 的启动、停止和重启命令 | `systemctl status glimpse-chat.service` |
+| Docker Engine/Compose | 持续运行容器，并根据 `restart: unless-stopped` 恢复容器 | `docker compose ps`、`docker compose logs` |
+| 容器健康检查 | 判断 Web、API、数据库等是否真正可提供服务 | `docker inspect`、本地 `curl` |
+
+`systemctl restart glimpse-chat.service` 能正常停止并重新启动容器，就说明该 unit 的编排职责正常。不要只为了让状态变成 `active (running)` 而删除 `-d` 或把 Compose 改为前台运行；这会改变日志、停止和进程附着行为，却不会提高容器可靠性。
+
+需要注意，容器在启动成功后才发生故障时，oneshot unit 仍可能显示 `active (exited)`。日常判断业务是否正常必须同时执行：
+
+```sh
+cd /srv/glimpse-chat-v2
+docker compose ps
+docker compose logs --tail 100 api web
+curl --noproxy '*' -fsS http://127.0.0.1:3000/health
+curl --noproxy '*' -fsS http://127.0.0.1:4100/health/ready
+```
+
 ## 15. 使用 systemd 守护 SSH 双路隧道
 
 创建 `/etc/systemd/system/glimpse-tunnel.service`：
@@ -729,6 +775,34 @@ sudo systemd-analyze verify /etc/systemd/system/glimpse-tunnel.service
 sudo systemctl daemon-reload
 sudo systemctl enable glimpse-tunnel.service
 ```
+
+### 15.1 macOS 和 WSL 能否同时映射到同一个域名
+
+macOS 和 WSL 可以同时运行各自的本地服务，但按本手册的单活架构，不能同时建立相同的云端反向转发监听：
+
+```text
+chat.glimpsetech.cn
+  → 云端 Nginx
+  → 127.0.0.1:10080（Web）和 127.0.0.1:10081（API）
+  → 一条 SSH 反向隧道
+  → macOS 或 WSL
+```
+
+域名的 DNS 实际始终指向云服务器；它不是直接同时指向 macOS 和 WSL。真正产生竞争的是云服务器上的 `10080/10081` 监听端口。同一个 IP、协议和端口组合只能被一条 SSH 隧道占用。若 macOS 旧隧道尚未释放端口，WSL 使用相同的 `-R` 启动时会因为 `ExitOnForwardFailure=yes` 退出，并通常记录：
+
+```text
+remote port forwarding failed for listen port 10080
+remote port forwarding failed for listen port 10081
+```
+
+`permitlisten` 只是授权某个密钥可以申请这些监听端口，并不能让两个连接共享同一个端口。推荐采用以下两种方式之一：
+
+| 模式 | macOS 隧道 | WSL 隧道 | 云端 Nginx | 使用场景 |
+| --- | --- | --- | --- | --- |
+| 单活接管 | 先停止 | 后启动相同 `10080/10081` | 不修改 | 正式迁移，配置最少 |
+| 并行验证 | 保留 `10080/10081` | 使用 `10082/10083` | 验证后切换 upstream | 降低切换风险、便于快速回滚 |
+
+不要未经设计就把两套后端加入 Nginx 负载均衡。macOS 和 WSL 若分别使用不同 PostgreSQL、Redis、上传文件卷或 JWT 密钥，会造成数据、登录状态、验证码、媒体和 WebSocket 会话不一致。只有在数据库、Redis、对象存储和密钥均按多节点架构统一后，才能考虑真正的双活。
 
 正式切换后启动和查看：
 
@@ -883,6 +957,51 @@ kill -HUP "$(cat /root/glimpse-chat/nginx/nginx.pid)"
 curl -kfsSI --resolve glimpsechat.com:443:127.0.0.1 https://glimpsechat.com/
 ```
 
+#### 修改云端 Nginx 文件后如何正确生效
+
+这台云服务器运行的是自定义 Nginx 实例，不是发行版默认的 systemd Nginx 服务。不要使用 `systemctl reload nginx`，也不要为了加载一个 upstream 变更而 stop/start Nginx。正确流程是“确认改对文件 → 验证新隧道 → 语法检查 → HUP 平滑加载 → 公网验收”。
+
+本手册实施时记录的实际生效文件是：
+
+```text
+/root/glimpse-chat/nginx/conf/conf.d/chat.glimpsetech.cn.dev.conf
+```
+
+如果实际修改的是 `chat.glimpsetech.cn.conf` 或其他同名文件，先确认主配置是否真的加载了它：
+
+```sh
+/root/bin/nginx -T -c /root/glimpse-chat/nginx/nginx.conf 2>&1 \
+  | grep -nE 'configuration file .*chat\.glimpsetech\.cn|server 127\.0\.0\.1:(10080|10081|10082|10083)'
+```
+
+输出必须同时显示实际加载的 chat 配置文件路径和准备使用的新 upstream 端口。若新文件没有出现在 `nginx -T` 输出中，修改它不会生效；应修改已加载文件或谨慎调整主配置的 `include`。不要让两个文件同时定义同名 upstream 或重复的 `server_name chat.glimpsetech.cn`。
+
+以并行端口 `10082/10083` 为例，加载前先确认隧道和 WSL 服务健康：
+
+```sh
+ss -lntp 'sport = :10082 or sport = :10083'
+curl -fsS --max-time 10 http://127.0.0.1:10082/health
+curl -fsS --max-time 10 http://127.0.0.1:10083/health/ready
+```
+
+然后检查并平滑加载真实 Nginx 实例：
+
+```sh
+/root/bin/nginx -t -c /root/glimpse-chat/nginx/nginx.conf
+kill -HUP "$(cat /root/glimpse-chat/nginx/nginx.pid)"
+```
+
+只有看到 `syntax is ok` 和 `test is successful` 才能执行 HUP。HUP 会让 Nginx 主进程重新读取配置并平滑替换 worker，不需要中断正在处理的连接。加载后立即验证新域名和原主站：
+
+```sh
+curl -fsS https://chat.glimpsetech.cn/health
+curl -fsS https://chat.glimpsetech.cn/health/ready
+curl -i https://chat.glimpsetech.cn/auth/me
+curl -I https://glimpsechat.com/
+```
+
+未登录访问 `/auth/me` 返回 `401` 属于正常结果；`404` 通常表示 API 分流错误，`502` 通常表示新 upstream 或隧道不可用。如果 `nginx -t` 成功但请求仍进入旧机器，再次用 `nginx -T` 检查当前加载文件和端口，通常是修改了未被 include 的文件、修改了错误的 server block，或尚未对真实 Nginx 主进程发送 HUP。
+
 如果公网验证失败，把 upstream 恢复为 `10080/10081`，重新检测并 HUP。并行迁移稳定后，可永久保留新端口，或在另一个维护窗口迁回标准端口。
 
 ## 18. 上线验收清单
@@ -967,7 +1086,9 @@ curl --noproxy '*' -fsS http://127.0.0.1:3000/health
 | --- | --- | --- |
 | Windows 重启后域名 502 | 计划任务、`wsl --list --running` | 确认发行版被唤醒，systemd unit 已 enable |
 | Docker 命令无法连接 | `systemctl status docker` | 区分 WSL Docker Engine 与 Docker Desktop，不要混用 |
+| `glimpse-chat.service` 显示 `active (exited)` | `docker compose ps`、本地健康检查 | oneshot + `up -d` 的正常状态；以容器和接口健康为准 |
 | 隧道提示 remote port forwarding failed | 云端 `ss`、macOS 旧隧道 | 同端口仍被旧隧道占用；先按切换流程停止旧连接 |
+| 修改 Nginx 端口后未生效 | 自定义 Nginx 的 `-T` 输出、pid 文件 | 确认修改的是已加载文件，`nginx -t` 成功后向真实主进程发送 HUP |
 | Web 502、API 正常 | `curl 127.0.0.1:3000/health` | 检查 Web 容器和 Docker 日志 |
 | API 502、Web 正常 | `curl 127.0.0.1:4100/health/ready` | 检查 API、PostgreSQL、迁移和 `.env` |
 | 数据库认证失败 | `DB_PASSWORD`、容器日志 | 新卷初始化后的密码不会因后改 `.env` 自动变化 |
