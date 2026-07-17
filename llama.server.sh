@@ -62,7 +62,7 @@ docker run -d \
   -p 1025:1025 \
   --log-opt max-size=100m \
   --log-opt max-file=3 \
-  ghcr.io/ggml-org/llama.cpp:server-cuda \
+  ghcr.io/ggml-org/llama.cpp:full-cuda \
   -m /models/qwen3/35B/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
   --mmproj /models/qwen3/35B/mmproj-BF16.gguf \
   --port 1025 \
