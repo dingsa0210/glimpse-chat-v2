@@ -1,0 +1,45 @@
+services:
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:full-cuda
+    container_name: llama-server
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "1025:1025"
+    volumes:
+      - /mnt/d/downloads/models:/models:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - "--server"
+      - "-m"
+      - "/models/qwen3/35B/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+      - "--mmproj"
+      - "/models/qwen3/35B/mmproj-BF16.gguf"
+      - "--port"
+      - "1025"
+      - "--host"
+      - "0.0.0.0"
+      - "-c"
+      - "262144"
+      - "-b"
+      - "512"
+      - "-t"
+      - "8"
+      - "-ngl"
+      - "999"
+      - "--jinja"
+      - "--alias"
+      - "qwen3.6"
+      - "--reasoning"
+      - "off"
