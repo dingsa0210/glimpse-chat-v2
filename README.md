@@ -54,13 +54,14 @@ Web/PWA-first cross-border chat application for Windows browsers and Android pho
 - Windows local: `http://127.0.0.1:3100` via `corepack pnpm dev:web`
 - LAN / Android phone: `http://<your-computer-lan-ip>:3101` via `corepack pnpm dev:web:lan`
 
-The current verified LAN IP is `192.168.0.107`; it can change when the network changes.
+The current verified LAN IP is `10.119.123.108`; it can change when the network changes.
 
 ## Realtime Dev Services
 
 - Web/PWA: `http://127.0.0.1:3101` via `corepack pnpm dev:web:lan`
 - API + Socket.IO: `http://127.0.0.1:4100` via `corepack pnpm dev:api`
-- Android on same Wi-Fi: open `http://192.168.0.107:3101` and ensure Windows firewall allows ports `3101` and `4100`.
+- Android on same Wi-Fi: open `http://192.168.31.229:3101` and ensure Windows firewall allows ports `3101` and `4100`.
+- HTTPS phone test: open `https://10.119.123.108:3443` after installing the local Root CA certificate described in `10_环境配置/本地HTTPS测试证书/安装说明-10.119.123.108.txt`.
 ## One-Command Local Startup
 
 After Docker Desktop is running, start infrastructure plus Prisma-mode API and Web with:

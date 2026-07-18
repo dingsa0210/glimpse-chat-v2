@@ -1,13 +1,12 @@
-node_modules/
-dist/
-.next/
+# 环境变量（含密钥，勿提交）
 .env
+
+# 依赖与构建产物
+node_modules/
+**/dist/
+**/.next/
+
+# 本地数据
+generated-images/
+.local
 *.log
-.turbo
-.cache
-pnpm-store/
-/tmp/
-99_输出结果/
-nginx-chat.conf
-nginx/
-.npmrc

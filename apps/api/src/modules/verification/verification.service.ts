@@ -1,155 +1,136 @@
-import crypto from "node:crypto";
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+﻿import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Redis } from "ioredis";
+import Redis from "ioredis";
+import { randomInt } from "node:crypto";
 
-const CODE_TTL_SECONDS = 10 * 60;        // 验证码 10 分钟过期
-const CODE_LENGTH = 6;                    // 6 位数字
-const SEND_COOLDOWN_SECONDS = 60;         // 同一邮箱 60 秒内不可重发
-const SEND_LIMIT_PER_HOUR = 5;            // 同一邮箱每小时最多发送 5 次
+const CODE_TTL_SECONDS = 10 * 60;
+const SEND_COOLDOWN_SECONDS = 60;
+const SEND_LIMIT_PER_HOUR = 5;
+const SEND_WINDOW_SECONDS = 60 * 60;
 
-interface CodeEntry { code: string; createdAt: number; }
-interface RateEntry { count: number; windowStart: number; lastSentAt: number; }
+type MemoryCode = { code: string; expiresAt: number };
+type MemoryCount = { count: number; expiresAt: number };
 
 @Injectable()
-export class VerificationService implements OnModuleInit, OnModuleDestroy {
-  private redis: Redis | null = null;
+export class VerificationService implements OnModuleDestroy {
   private readonly logger = new Logger(VerificationService.name);
+  private redis?: Redis;
+  private redisReady = false;
+  private redisInit?: Promise<void>;
+  private readonly memoryCodes = new Map<string, MemoryCode>();
+  private readonly memoryCooldowns = new Map<string, number>();
+  private readonly memoryCounts = new Map<string, MemoryCount>();
 
-  // 内存 fallback（当 Redis 不可用时）
-  private readonly codes = new Map<string, CodeEntry>();
-  private readonly rates = new Map<string, RateEntry>();
-
-  constructor(private readonly config: ConfigService) {}
-
-  async onModuleInit() {
-    const redisUrl = this.config.get<string>("REDIS_URL");
-    if (!redisUrl) {
-      this.logger.warn("REDIS_URL not configured — using in-memory fallback.");
-      return;
-    }
-    try {
-      this.redis = new Redis(redisUrl, {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1,
-        retryStrategy: () => null,
+  constructor(private readonly config: ConfigService) {
+    const redisUrl = this.config.get<string>("REDIS_URL", "").trim();
+    if (!redisUrl) return;
+    this.redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 1, enableOfflineQueue: false });
+    this.redisInit = this.redis.connect().then(() => {
+        this.redisReady = true;
+        this.logger.log("Email verification is using Redis storage.");
+      }).catch((error) => {
+        this.redisReady = false;
+        this.redis?.disconnect();
+        this.redis = undefined;
+        this.logger.warn(`Redis unavailable for email verification; falling back to memory: ${error instanceof Error ? error.message : String(error)}`);
       });
-      await this.redis.connect();
-      this.logger.log("Redis connected for verification codes.");
-    } catch {
-      this.logger.warn("Redis unavailable — using in-memory fallback.");
-      this.redis = null;
-    }
   }
 
   async onModuleDestroy() {
-    if (this.redis) {
-      await this.redis.quit();
-      this.redis = null;
-    }
+    this.redis?.disconnect();
   }
 
-  /** 生成 6 位随机数字验证码 */
-  generateCode(): string {
-    const buffer = new Uint32Array(1);
-    crypto.getRandomValues(buffer);
-    const value = (buffer[0] ?? 0) % 1_000_000;
-    return String(value).padStart(CODE_LENGTH, "0");
+  normalizeEmail(email: string) {
+    return email.trim().toLowerCase();
   }
 
-  /** 检查是否可以发送验证码（频率限制） */
-  async canSend(email: string): Promise<{ allowed: boolean; retryAfterSeconds?: number }> {
-    if (this.redis) return this.redisCanSend(email);
-    return this.memoryCanSend(email);
+  generateCode() {
+    return String(randomInt(0, 1_000_000)).padStart(6, "0");
   }
 
-  /** 保存验证码并设置频率限制 */
-  async saveCode(email: string, code: string): Promise<void> {
-    if (this.redis) {
-      await this.redisSaveCode(email, code);
+  async canSend(email: string): Promise<{ ok: true } | { ok: false; reason: "cooldown" | "limit"; retryAfterSeconds: number }> {
+    await this.waitForRedis();
+    const normalized = this.normalizeEmail(email);
+    if (this.redisReady && this.redis) return this.redisCanSend(normalized);
+    return this.memoryCanSend(normalized);
+  }
+
+  async saveCode(email: string, code: string) {
+    await this.waitForRedis();
+    const normalized = this.normalizeEmail(email);
+    if (this.redisReady && this.redis) {
+      await this.redis.set(this.codeKey(normalized), code, "EX", CODE_TTL_SECONDS);
+      await this.redis.set(this.cooldownKey(normalized), "1", "EX", SEND_COOLDOWN_SECONDS);
+      const count = await this.redis.incr(this.countKey(normalized));
+      if (count === 1) await this.redis.expire(this.countKey(normalized), SEND_WINDOW_SECONDS);
       return;
     }
-    this.memorySaveCode(email, code);
-  }
-
-  /** 校验验证码，校验成功后删除 */
-  async verifyCode(email: string, code: string): Promise<boolean> {
-    if (this.redis) return this.redisVerifyCode(email, code);
-    return this.memoryVerifyCode(email, code);
-  }
-
-  // ---------- Redis ----------
-
-  private async redisCanSend(email: string): Promise<{ allowed: boolean; retryAfterSeconds?: number }> {
-    const cooldownKey = `verify:cooldown:${email}`;
-    const countKey = `verify:count:${email}`;
-    const cooldownTtl = await this.redis!.ttl(cooldownKey);
-    if (cooldownTtl > 0) return { allowed: false, retryAfterSeconds: cooldownTtl };
-    const count = parseInt(await this.redis!.get(countKey) || "0", 10);
-    if (count >= SEND_LIMIT_PER_HOUR) {
-      const countTtl = await this.redis!.ttl(countKey);
-      return { allowed: false, retryAfterSeconds: Math.max(countTtl, 1) };
-    }
-    return { allowed: true };
-  }
-
-  private async redisSaveCode(email: string, code: string): Promise<void> {
-    const codeKey = `verify:code:${email}`;
-    const cooldownKey = `verify:cooldown:${email}`;
-    const countKey = `verify:count:${email}`;
-    await this.redis!.set(codeKey, code, "EX", CODE_TTL_SECONDS);
-    await this.redis!.set(cooldownKey, "1", "EX", SEND_COOLDOWN_SECONDS);
-    const newCount = await this.redis!.incr(countKey);
-    if (newCount === 1) await this.redis!.expire(countKey, 3600);
-  }
-
-  private async redisVerifyCode(email: string, code: string): Promise<boolean> {
-    const codeKey = `verify:code:${email}`;
-    const stored = await this.redis!.get(codeKey);
-    if (!stored || stored !== code) return false;
-    await this.redis!.del(codeKey);
-    return true;
-  }
-
-  // ---------- 内存 fallback ----------
-
-  private memoryCanSend(email: string): { allowed: boolean; retryAfterSeconds?: number } {
     const now = Date.now();
-    const rate = this.rates.get(email);
-    if (!rate) return { allowed: true };
-
-    const cooldownRemaining = Math.ceil((rate.lastSentAt + SEND_COOLDOWN_SECONDS * 1000 - now) / 1000);
-    if (cooldownRemaining > 0) return { allowed: false, retryAfterSeconds: cooldownRemaining };
-
-    if (now - rate.windowStart < 3600_000 && rate.count >= SEND_LIMIT_PER_HOUR) {
-      const remaining = Math.ceil((rate.windowStart + 3600_000 - now) / 1000);
-      return { allowed: false, retryAfterSeconds: Math.max(remaining, 1) };
-    }
-    return { allowed: true };
-  }
-
-  private memorySaveCode(email: string, code: string): void {
-    const now = Date.now();
-    this.codes.set(email, { code, createdAt: now });
-
-    const existing = this.rates.get(email);
-    if (!existing || now - existing.windowStart >= 3600_000) {
-      this.rates.set(email, { count: 1, windowStart: now, lastSentAt: now });
+    this.memoryCodes.set(normalized, { code, expiresAt: now + CODE_TTL_SECONDS * 1000 });
+    this.memoryCooldowns.set(normalized, now + SEND_COOLDOWN_SECONDS * 1000);
+    const current = this.memoryCounts.get(normalized);
+    if (!current || current.expiresAt <= now) {
+      this.memoryCounts.set(normalized, { count: 1, expiresAt: now + SEND_WINDOW_SECONDS * 1000 });
     } else {
-      existing.count += 1;
-      existing.lastSentAt = now;
+      current.count += 1;
+      this.memoryCounts.set(normalized, current);
     }
   }
 
-  private memoryVerifyCode(email: string, code: string): boolean {
-    const entry = this.codes.get(email);
-    if (!entry) return false;
-    if (Date.now() - entry.createdAt > CODE_TTL_SECONDS * 1000) {
-      this.codes.delete(email);
-      return false;
-    }
-    if (entry.code !== code) return false;
-    this.codes.delete(email);
+  async consumeCode(email: string, code: string) {
+    await this.waitForRedis();
+    const normalized = this.normalizeEmail(email);
+    const expected = await this.getCode(normalized);
+    if (!expected || expected !== code.trim()) return false;
+    await this.deleteCode(normalized);
     return true;
   }
+
+  private async getCode(email: string) {
+    if (this.redisReady && this.redis) return this.redis.get(this.codeKey(email));
+    const current = this.memoryCodes.get(email);
+    if (!current) return null;
+    if (current.expiresAt <= Date.now()) {
+      this.memoryCodes.delete(email);
+      return null;
+    }
+    return current.code;
+  }
+
+  private async deleteCode(email: string) {
+    if (this.redisReady && this.redis) {
+      await this.redis.del(this.codeKey(email));
+      return;
+    }
+    this.memoryCodes.delete(email);
+  }
+
+  private async waitForRedis() {
+    if (this.redisInit) await this.redisInit;
+  }
+
+  private async redisCanSend(email: string): Promise<{ ok: true } | { ok: false; reason: "cooldown" | "limit"; retryAfterSeconds: number }> {
+    if (!this.redis) return this.memoryCanSend(email);
+    const cooldown = await this.redis.ttl(this.cooldownKey(email));
+    if (cooldown > 0) return { ok: false, reason: "cooldown", retryAfterSeconds: cooldown };
+    const count = Number(await this.redis.get(this.countKey(email)) ?? "0");
+    if (count >= SEND_LIMIT_PER_HOUR) {
+      const ttl = await this.redis.ttl(this.countKey(email));
+      return { ok: false, reason: "limit", retryAfterSeconds: Math.max(ttl, SEND_COOLDOWN_SECONDS) };
+    }
+    return { ok: true };
+  }
+
+  private memoryCanSend(email: string): { ok: true } | { ok: false; reason: "cooldown" | "limit"; retryAfterSeconds: number } {
+    const now = Date.now();
+    const cooldownUntil = this.memoryCooldowns.get(email) ?? 0;
+    if (cooldownUntil > now) return { ok: false, reason: "cooldown", retryAfterSeconds: Math.ceil((cooldownUntil - now) / 1000) };
+    const current = this.memoryCounts.get(email);
+    if (current && current.expiresAt > now && current.count >= SEND_LIMIT_PER_HOUR) return { ok: false, reason: "limit", retryAfterSeconds: Math.ceil((current.expiresAt - now) / 1000) };
+    return { ok: true };
+  }
+
+  private codeKey(email: string) { return `verify:code:${email}`; }
+  private cooldownKey(email: string) { return `verify:cooldown:${email}`; }
+  private countKey(email: string) { return `verify:count:${email}`; }
 }

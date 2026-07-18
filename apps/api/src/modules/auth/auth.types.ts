@@ -1,4 +1,4 @@
-﻿export type AuthenticatedUser = {
+export type AuthenticatedUser = {
   id: string;
   email?: string | null;
   phone?: string | null;
@@ -16,6 +16,8 @@
   signature?: string | null;
   language: "zh" | "en";
   role: "user" | "admin";
+  isSuperAdmin?: boolean;
+  adminPermissions?: string[];
 };
 
 export type AccessTokenPayload = {
@@ -36,4 +38,6 @@ export type AccessTokenPayload = {
   signature?: string | null;
   language: "zh" | "en";
   role?: "user" | "admin";
+  isSuperAdmin?: boolean;
+  adminPermissions?: string[];
 };

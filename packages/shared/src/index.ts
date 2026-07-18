@@ -1,7 +1,18 @@
-export const GLIMPSE_CHAT_VERSION = "v32.56";
+export const GLIMPSE_CHAT_VERSION = "v32.97.152";
 
 export type UserLanguage = "zh" | "en";
 export type UserRole = "user" | "admin";
+export type AdminPermission = "overview" | "users" | "user_chats" | "conversations" | "feedback" | "settings" | "admins";
+
+export const ADMIN_PERMISSION_OPTIONS: Array<{ code: AdminPermission; label: string; zhLabel: string; hiLabel: string }> = [
+  { code: "overview", label: "Dashboard overview", zhLabel: "后台概览", hiLabel: "डैशबोर्ड अवलोकन" },
+  { code: "users", label: "User management", zhLabel: "用户管理", hiLabel: "उपयोगकर्ता प्रबंधन" },
+  { code: "user_chats", label: "User chat history", zhLabel: "聊天记录查看", hiLabel: "उपयोगकर्ता चैट इतिहास" },
+  { code: "conversations", label: "Conversation list", zhLabel: "会话列表", hiLabel: "बातचीत सूची" },
+  { code: "feedback", label: "Feedback queue", zhLabel: "反馈处理", hiLabel: "फीडबैक कतार" },
+  { code: "settings", label: "System settings", zhLabel: "系统配置", hiLabel: "सिस्टम सेटिंग्स" },
+  { code: "admins", label: "Administrator accounts", zhLabel: "管理员账户", hiLabel: "एडमिन खाते" }
+];
 
 export type TranslationLanguage =
   | "zh"
@@ -84,6 +95,8 @@ export interface PublicUser {
   signature?: string | null;
   language: UserLanguage;
   role?: UserRole;
+  isSuperAdmin?: boolean;
+  adminPermissions?: AdminPermission[];
   online?: boolean;
 }
 
@@ -110,7 +123,21 @@ export interface GroupMemberSummary {
   invitedById?: string | null;
   invitedBy?: (PublicUser & { email?: string | null; phone?: string | null }) | null;
   isOwner: boolean;
+  isAdmin: boolean;
 }
+
+export interface ManualTranslationRevision {
+  body: string;
+  editedById: string;
+  editedByName: string;
+  editedAt: string;
+}
+
+export interface ManualTranslation extends ManualTranslationRevision {
+  originalBody?: string;
+  revisions?: ManualTranslationRevision[];
+}
+
 export interface MessagePayload {
   id: string;
   conversationId: string;
@@ -120,6 +147,7 @@ export interface MessagePayload {
   body?: string;
   mediaUrl?: string;
   thumbnailUrl?: string;
+  mediaSizeBytes?: number;
   transcript?: string;
   revokedAt?: string;
   replyToMessageId?: string;
@@ -129,6 +157,10 @@ export interface MessagePayload {
   sourceLanguage?: TranslationSourceLanguage;
   targetLanguage?: TranslationLanguage;
   translations?: Partial<Record<TranslationLanguage, string>>;
+  manualTranslations?: Partial<Record<TranslationLanguage, ManualTranslation>>;
+  albumId?: string;
+  albumIndex?: number;
+  albumSize?: number;
   createdAt: string;
 }
 
@@ -163,6 +195,25 @@ export interface ArchivePreviewResponse {
   truncated: boolean;
 }
 
+export type DocumentPreviewKind = "pdf" | "svg" | "image" | "text" | "html" | "spreadsheet" | "presentation" | "unsupported";
+
+export interface DocumentPreviewResponse {
+  fileName: string;
+  mimeType: string;
+  kind: DocumentPreviewKind;
+  url?: string;
+  content?: string;
+  warning?: string;
+  engine?: string;
+}
+
+export type OfficeConversionFormat = "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods" | "odp";
+
+export interface OfficeConversionRequest {
+  format: OfficeConversionFormat;
+  fileName?: string;
+}
+
 export const MEDIA_LIMITS = {
   imageMaxBytes: 500 * 1024 * 1024,
   videoMaxBytes: 500 * 1024 * 1024,
@@ -174,7 +225,7 @@ export const MEDIA_LIMITS = {
 export const ALLOWED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
 export const ALLOWED_VIDEO_MIME_TYPES = ["video/mp4", "video/webm", "video/quicktime"] as const;
 export const ALLOWED_AUDIO_MIME_TYPES = ["audio/mpeg", "audio/mp4", "audio/aac", "audio/wav", "audio/webm", "audio/ogg"] as const;
-export const ALLOWED_FILE_MIME_TYPES = ["application/pdf", "text/plain", "text/csv", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation"] as const;
+export const ALLOWED_FILE_MIME_TYPES = ["application/pdf", "text/plain", "text/csv", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "image/vnd.dxf", "image/vnd.dwg", "application/acad", "application/x-caxa-exb"] as const;
 export const ALLOWED_MEDIA_MIME_TYPES = [...ALLOWED_IMAGE_MIME_TYPES, ...ALLOWED_VIDEO_MIME_TYPES, ...ALLOWED_AUDIO_MIME_TYPES, ...ALLOWED_FILE_MIME_TYPES] as const;
 export const SUPPORTED_LANGUAGES: UserLanguage[] = ["zh", "en"];
 export interface AuthResponse {
@@ -194,6 +245,7 @@ export interface CallSignalPayload {
   callId: string;
   media: CallMediaKind;
   signalType: CallSignalType;
+  participantUserIds?: string[];
   targetUserId?: string;
   sdp?: string;
   candidate?: unknown;
@@ -206,6 +258,34 @@ export interface CallSignalEvent extends CallSignalPayload {
   fromName?: string;
   createdAt: string;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

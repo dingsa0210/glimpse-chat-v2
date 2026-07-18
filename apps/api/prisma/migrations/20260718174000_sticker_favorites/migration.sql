@@ -1,0 +1,2 @@
+ALTER TABLE "User"
+ADD COLUMN "stickerFavoriteIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

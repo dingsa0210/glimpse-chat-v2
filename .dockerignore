@@ -1,35 +1,36 @@
-# Dependencies (prebuilt approach needs node_modules and build outputs)
-# node_modules — KEPT for API prebuilt image
-# apps/api/dist — KEPT for API prebuilt image
-# apps/web/.next — KEPT for Web prebuilt image
-# packages/shared/dist — KEPT for shared prebuilt image
-
-# IDE
+# 版本控制与元数据
 .git
-.idea
+.gitignore
+.codebuddy
+
+# 依赖与构建产物（容器内重新安装/构建）
+**/node_modules
+**/dist
+**/.next
+
+# 环境变量文件（避免泄漏，仅保留 .env.example 供参考）
+**/.env
+**/.env.*
+!**/.env.example
+
+# IDE 与系统文件
 .vscode
-*.swp
-*.swo
+.idea
+**/*.log
+**/.DS_Store
 
-# OS
-.DS_Store
-Thumbs.db
+# 文档与脚本（无需进镜像）
+*.md
+docs/
+*.ps1
 
-# Logs & cache
-*.log
-.npm
-.cache
-.pnpm-store
+# Docker 自身（避免循环复制）
+Dockerfile
+.dockerignore
+docker-compose*.yml
 
-# Environment
-.env
-.env.local
-.env.*.local
+# 生成资源
+generated-images
 
-# Uploads (开发时的测试文件)
-apps/api/99_输出结果
-
-# Documentation
-03_更新说明
-09_工作流版本库
-README.md
+# Prisma 产物（容器内重新 generate）
+**/prisma/migrations/**/migration.sql.bak

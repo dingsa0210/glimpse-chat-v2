@@ -55,6 +55,9 @@ model User {
   profileSignature String?
   language     UserLanguage @default(ZH)
   role         UserRole @default(USER)
+  isSuperAdmin Boolean @default(false)
+  adminPermissions String[] @default([])
+  stickerFavoriteIds String[] @default([])
   disabledAt   DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -66,6 +69,12 @@ model User {
   blocksSent UserBlock[] @relation("BlocksSent")
   blocksReceived UserBlock[] @relation("BlocksReceived")
   feedbacks Feedback[]
+  favoriteMessages MessageFavorite[]
+  passwordResetTokens PasswordResetToken[]
+  contactTagsOwned ContactTag[] @relation("ContactTagsOwned")
+  contactTagsAssigned ContactTag[] @relation("ContactTagsAssigned")
+  contactMemosOwned ContactMemo[] @relation("ContactMemosOwned")
+  contactMemosAssigned ContactMemo[] @relation("ContactMemosAssigned")
 }
 
 model FriendRequest {
@@ -117,6 +126,7 @@ model ConversationMember {
   invitedById    String?
   joinedAt       DateTime @default(now())
   lastReadAt     DateTime?
+  isAdmin        Boolean @default(false)
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
   user         User @relation(fields: [userId], references: [id])
@@ -135,6 +145,7 @@ model Message {
   body           String?
   mediaUrl       String?
   mediaThumbnailUrl String?
+  mediaSizeBytes  BigInt?
     transcript     String?
     revokedAt      DateTime?
   replyToMessageId String?
@@ -142,11 +153,17 @@ model Message {
   replyToMessageType MessageType?
   replyToMessageBody String?
   sourceLanguage String?
+  albumId        String?
+  albumIndex     Int?
+  albumSize      Int?
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
   sender       User? @relation("SentMessages", fields: [senderId], references: [id])
   translations MessageTranslation[]
+  favorites MessageFavorite[]
+
+  @@index([albumId])
 }
 
 model MessageTranslation {
@@ -159,6 +176,37 @@ model MessageTranslation {
   message Message @relation(fields: [messageId], references: [id])
 
   @@unique([messageId, language])
+}
+
+model MessageFavorite {
+  id        String   @id @default(cuid())
+  userId    String
+  messageId String?
+  createdAt DateTime @default(now())
+  tags      String[] @default([])
+
+  snapshotMessageId         String?
+  snapshotConversationId    String?
+  snapshotConversationTitle String?
+  snapshotConversationType  String?
+  snapshotSenderId          String?
+  snapshotSenderName        String?
+  snapshotType              String?
+  snapshotBody              String?
+  snapshotMediaUrl          String?
+  snapshotThumbnailUrl      String?
+  snapshotTranscript        String?
+  snapshotSourceLanguage    String?
+  snapshotTranslations      Json?
+  snapshotCreatedAt         DateTime?
+
+  user    User     @relation(fields: [userId], references: [id])
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, messageId])
+  @@index([messageId])
+  @@index([userId, createdAt])
+  @@index([userId])
 }
 
 model Feedback {
@@ -177,6 +225,56 @@ model Feedback {
   @@index([status, createdAt])
 }
 
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
 
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, expiresAt])
+}
 
+model ContactTag {
+  id        String   @id @default(cuid())
+  ownerId   String
+  contactId String
+  label     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner   User @relation("ContactTagsOwned", fields: [ownerId], references: [id], onDelete: Cascade)
+  contact User @relation("ContactTagsAssigned", fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, contactId, label])
+  @@index([ownerId, contactId])
+  @@index([ownerId, label])
+}
+
+model ContactMemo {
+  id        String   @id @default(cuid())
+  ownerId   String
+  contactId String
+  body      String   @default("")
+  images    Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner   User @relation("ContactMemosOwned", fields: [ownerId], references: [id], onDelete: Cascade)
+  contact User @relation("ContactMemosAssigned", fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, contactId])
+  @@index([ownerId, updatedAt])
+}
+model SystemSetting {
+  key         String   @id
+  value       String?
+  sensitive   Boolean  @default(false)
+  description String?
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+}

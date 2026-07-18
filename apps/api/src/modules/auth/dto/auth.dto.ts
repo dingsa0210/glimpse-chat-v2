@@ -1,9 +1,4 @@
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
-
-export class SendCodeDto {
-  @IsEmail()
-  email!: string;
-}
+﻿import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Length, MaxLength, MinLength } from "class-validator";
 
 export class RegisterDto {
   @IsEmail()
@@ -22,9 +17,13 @@ export class RegisterDto {
   language?: "zh" | "en";
 
   @IsString()
-  @MinLength(6)
-  @MaxLength(6)
+  @Length(6, 6)
   code!: string;
+}
+
+export class SendCodeDto {
+  @IsEmail()
+  email!: string;
 }
 
 export class LoginDto {
@@ -55,6 +54,11 @@ export class UpdateProfileDto {
   @IsString()
   @MaxLength(32)
   publicId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
 
   @IsOptional()
   @IsString()
@@ -97,4 +101,21 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsBoolean()
   profilePhonePublic?: boolean;
+}
+
+
+
+export class ForgotPasswordDto {
+  @IsEmail()
+  email!: string;
+}
+
+export class ResetPasswordDto {
+  @IsString()
+  @MinLength(32)
+  token!: string;
+
+  @IsString()
+  @MinLength(8)
+  newPassword!: string;
 }

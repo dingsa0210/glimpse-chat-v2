@@ -1,5 +1,5 @@
 ﻿import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import type { ConversationSummary, GroupMemberSummary, PublicUser } from "@glimpse/shared";
+import type { ConversationSummary, GroupMemberSummary, MessagePayload, PublicUser } from "@glimpse/shared";
 import type { Conversation } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../prisma/prisma.service";
@@ -42,6 +42,17 @@ export class ContactsService {
     if (!firstMember) return null;
     await this.prisma.conversation.update({ where: { id: conversation.id }, data: { ownerId: firstMember.userId } });
     return firstMember.userId;
+  }
+
+  private async requireGroupManager(currentUserId: string, conversation: Conversation) {
+    const ownerId = await this.resolveGroupOwner(conversation);
+    if (ownerId === currentUserId) return ownerId;
+    const membership = await this.prisma.conversationMember.findUnique({
+      where: { conversationId_userId: { conversationId: conversation.id, userId: currentUserId } },
+      select: { isAdmin: true }
+    });
+    if (!membership?.isAdmin) throw new ForbiddenException("Only the group owner or an administrator can perform this action.");
+    return ownerId;
   }
 
 
@@ -165,6 +176,112 @@ export class ContactsService {
     return users.map(toPublicUser);
   }
 
+
+  async globalSearch(currentUserId: string, query: string) {
+    const keyword = query.trim();
+    if (keyword.length < 2) return { results: [] };
+    const memberships = await this.prisma.conversationMember.findMany({ where: { userId: currentUserId }, select: { conversationId: true } });
+    const conversationIds = memberships.map((item) => item.conversationId);
+    const results: Array<Record<string, unknown>> = [];
+    const seen = new Set<string>();
+    const push = (item: Record<string, unknown> & { id: string }) => {
+      if (seen.has(item.id)) return;
+      seen.add(item.id);
+      results.push(item);
+    };
+
+    if (conversationIds.length) {
+      const conversations = await this.prisma.conversation.findMany({
+        where: { id: { in: conversationIds } },
+        include: { members: { include: { user: true } }, messages: { orderBy: { createdAt: "desc" }, take: 1 } },
+        take: 50
+      });
+      for (const conversation of conversations) {
+        const other = conversation.members.find((member) => member.userId !== currentUserId)?.user;
+        const title = conversation.type === "DIRECT" ? other?.nickname ?? conversation.title ?? "Direct chat" : conversation.title ?? "Group chat";
+        const latest = conversation.messages[0];
+        const haystack = [title, latest?.body].filter(Boolean).join(" ").toLowerCase();
+        if (haystack.includes(keyword.toLowerCase())) {
+          push({ id: `conversation-${conversation.id}`, kind: "conversation", title, subtitle: latest?.body ?? "", conversationId: conversation.id, avatarUrl: conversation.type === "DIRECT" ? other?.avatarUrl : conversation.avatarUrl, avatarKind: conversation.type === "GROUP" ? "group" : "user" });
+        }
+      }
+
+      const messages = await this.prisma.message.findMany({
+        where: {
+          conversationId: { in: conversationIds },
+          OR: [
+            { body: { contains: keyword, mode: "insensitive" } },
+            { transcript: { contains: keyword, mode: "insensitive" } },
+            { senderName: { contains: keyword, mode: "insensitive" } },
+            { translations: { some: { body: { contains: keyword, mode: "insensitive" } } } }
+          ]
+        },
+        include: { translations: true, conversation: { select: { id: true, title: true, type: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 30
+      });
+      for (const message of messages) {
+        push({ id: `message-${message.id}`, kind: "message", title: message.conversation.title ?? "Chat message", subtitle: message.body ?? message.transcript ?? `[${message.type.toLowerCase()}]`, conversationId: message.conversationId, messageId: message.id, message: this.toMessagePayload(message), avatarKind: message.conversation.type === "GROUP" ? "group" : "user" });
+      }
+    }
+
+    const contacts = await this.searchUsers(currentUserId, keyword);
+    for (const user of contacts) {
+      push({ id: `contact-${user.id}`, kind: "contact", title: user.nickname, subtitle: user.email ?? user.phone ?? user.publicId ?? user.id, user, avatarUrl: user.avatarUrl, avatarKind: "user" });
+    }
+
+    const favorites = await this.prisma.messageFavorite.findMany({
+      where: { userId: currentUserId },
+      include: { message: { include: { translations: true, conversation: { select: { id: true, title: true, type: true } } } } },
+      orderBy: { createdAt: "desc" },
+      take: 100
+    });
+    for (const favorite of favorites) {
+      const tags = favorite.tags ?? [];
+      const body = favorite.message?.body ?? favorite.snapshotBody ?? favorite.snapshotTranscript ?? "";
+      const title = favorite.message?.conversation?.title ?? favorite.snapshotConversationTitle ?? "Favorite";
+      const haystack = [title, body, favorite.snapshotSenderName, ...tags].filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(keyword.toLowerCase())) continue;
+      const message = favorite.message ? this.toMessagePayload(favorite.message) : {
+        id: favorite.snapshotMessageId ?? favorite.id,
+        conversationId: favorite.snapshotConversationId ?? favorite.id,
+        senderId: favorite.snapshotSenderId ?? "unknown",
+        senderName: favorite.snapshotSenderName ?? undefined,
+        type: (favorite.snapshotType ?? "TEXT").toLowerCase() as MessagePayload["type"],
+        body: favorite.snapshotBody ?? undefined,
+        mediaUrl: favorite.snapshotMediaUrl ?? undefined,
+        thumbnailUrl: favorite.snapshotThumbnailUrl ?? undefined,
+        transcript: favorite.snapshotTranscript ?? undefined,
+        translations: favorite.snapshotTranslations && typeof favorite.snapshotTranslations === "object" && !Array.isArray(favorite.snapshotTranslations) ? favorite.snapshotTranslations as MessagePayload["translations"] : {},
+        createdAt: (favorite.snapshotCreatedAt ?? favorite.createdAt).toISOString()
+      };
+      push({ id: `favorite-${favorite.id}`, kind: "favorite", title, subtitle: `${tags.length ? `#${tags.join(" #")} - ` : ""}${body}`, conversationId: message.conversationId, messageId: message.id, favorite: { id: favorite.id, createdAt: favorite.createdAt.toISOString(), tags, message, conversation: { id: message.conversationId, title, type: favorite.snapshotConversationType ?? favorite.message?.conversation?.type } }, avatarKind: "group" });
+    }
+
+    return { results: results.slice(0, 80) };
+  }
+
+  private toMessagePayload(message: { id: string; conversationId: string; senderId: string; senderName: string | null; type: string; body: string | null; mediaUrl: string | null; mediaThumbnailUrl: string | null; transcript: string | null; revokedAt?: Date | null; replyToMessageId?: string | null; replyToMessageSenderName?: string | null; replyToMessageType?: string | null; replyToMessageBody?: string | null; sourceLanguage: string | null; createdAt: Date; translations: Array<{ language: string; body: string }> }): MessagePayload {
+    return {
+      id: message.id,
+      conversationId: message.conversationId,
+      senderId: message.senderId,
+      senderName: message.senderName ?? undefined,
+      type: message.type.toLowerCase() as MessagePayload["type"],
+      body: message.body ?? undefined,
+      mediaUrl: message.mediaUrl ?? undefined,
+      thumbnailUrl: message.mediaThumbnailUrl ?? undefined,
+      transcript: message.transcript ?? undefined,
+      revokedAt: message.revokedAt?.toISOString() ?? undefined,
+      replyToMessageId: message.replyToMessageId ?? undefined,
+      replyToMessageSenderName: message.replyToMessageSenderName ?? undefined,
+      replyToMessageType: message.replyToMessageType ? (message.replyToMessageType.toLowerCase() as MessagePayload["type"]) : undefined,
+      replyToMessageBody: message.replyToMessageBody ?? undefined,
+      sourceLanguage: message.sourceLanguage ? (message.sourceLanguage.toLowerCase() as MessagePayload["sourceLanguage"]) : undefined,
+      translations: Object.fromEntries(message.translations.map((item) => [item.language.toLowerCase(), item.body])),
+      createdAt: message.createdAt.toISOString()
+    };
+  }
   async listConversations(userId: string): Promise<ConversationSummary[]> {
     const memberships = await this.prisma.conversationMember.findMany({
       where: { userId },
@@ -183,7 +300,9 @@ export class ContactsService {
       memberships.map(async ({ conversation, lastReadAt }) => {
         const latest = conversation.messages[0];
         const other = conversation.members.find((member) => member.userId !== userId)?.user;
-        const title = conversation.type === "DIRECT" ? other?.nickname ?? conversation.title ?? "Direct chat" : conversation.title ?? "Group chat";
+        const self = conversation.members.find((member) => member.userId === userId)?.user;
+        const directUser = other ?? self;
+        const title = conversation.type === "DIRECT" ? directUser?.nickname ?? conversation.title ?? "Direct chat" : conversation.title ?? "Group chat";
         const unreadCount = await this.prisma.message.count({
           where: {
             conversationId: conversation.id,
@@ -195,12 +314,12 @@ export class ContactsService {
           id: conversation.id,
           type: conversation.type.toLowerCase() as "direct" | "group",
           title,
-          avatarUrl: conversation.type === "DIRECT" ? other?.avatarUrl ?? undefined : conversation.avatarUrl ?? undefined,
+          avatarUrl: conversation.type === "DIRECT" ? directUser?.avatarUrl ?? undefined : conversation.avatarUrl ?? undefined,
           announcement: conversation.announcement ?? undefined,
           announcementScroll: conversation.type === "GROUP" ? conversation.announcementScroll : undefined,
           ownerId: conversation.type === "GROUP" ? conversation.ownerId ?? conversation.members.slice().sort((a, b) => a.joinedAt.getTime() - b.joinedAt.getTime())[0]?.userId ?? undefined : undefined,
           memberCount: conversation.members.length,
-          otherUser: conversation.type === "DIRECT" && other ? toPublicUser(other) : undefined,
+          otherUser: conversation.type === "DIRECT" && directUser ? toPublicUser(directUser) : undefined,
           latestMessage: latest?.body ?? undefined,
           latestMessageAt: latest?.createdAt.toISOString(),
           unreadCount
@@ -336,6 +455,8 @@ export class ContactsService {
   }
   async listFriends(currentUserId: string) {
     const byId = new Map<string, ReturnType<typeof toPublicUser>>();
+    const self = await this.prisma.user.findUnique({ where: { id: currentUserId } });
+    if (self) byId.set(self.id, toPublicUser(self));
     const requests = await this.prisma.friendRequest.findMany({
       where: {
         status: "ACCEPTED",
@@ -369,8 +490,105 @@ export class ContactsService {
       byId.set(user.id, user);
     }
 
-    return Array.from(byId.values());
+    const values = Array.from(byId.values());
+    const selfIndex = values.findIndex((user) => user.id === currentUserId);
+    if (selfIndex > 0) values.unshift(...values.splice(selfIndex, 1));
+    return values;
   }
+
+  private normalizeContactTags(input: string[] | string | undefined) {
+    const raw = Array.isArray(input) ? input : typeof input === "string" ? input.split(/[,#，、\s]+/) : [];
+    const tags: string[] = [];
+    const seen = new Set<string>();
+    for (const value of raw) {
+      const label = String(value ?? "").trim().replace(/^#+/, "").slice(0, 40);
+      const key = label.toLocaleLowerCase();
+      if (!label || seen.has(key)) continue;
+      seen.add(key);
+      tags.push(label);
+      if (tags.length >= 20) break;
+    }
+    return tags;
+  }
+
+  async listContactTags(currentUserId: string): Promise<Record<string, string[]>> {
+    const rows = await this.prisma.contactTag.findMany({
+      where: { ownerId: currentUserId },
+      orderBy: [{ contactId: "asc" }, { createdAt: "asc" }]
+    });
+    return rows.reduce<Record<string, string[]>>((result, row) => {
+      (result[row.contactId] ??= []).push(row.label);
+      return result;
+    }, {});
+  }
+
+  async updateContactTags(currentUserId: string, contactUserId: string, input: string[] | string | undefined) {
+    if (currentUserId === contactUserId) throw new BadRequestException("Contact tags are only for other contacts.");
+    const contact = await this.prisma.user.findUnique({ where: { id: contactUserId }, select: { id: true } });
+    if (!contact) throw new NotFoundException("Contact was not found.");
+    await this.ensureNotBlocked(currentUserId, contactUserId);
+    if (!(await this.isEffectiveFriend(currentUserId, contactUserId))) {
+      throw new ConflictException("You must save this user as a contact before assigning tags.");
+    }
+    const tags = this.normalizeContactTags(input);
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.contactTag.deleteMany({ where: { ownerId: currentUserId, contactId: contactUserId } });
+      if (tags.length > 0) {
+        await transaction.contactTag.createMany({ data: tags.map((label) => ({ ownerId: currentUserId, contactId: contactUserId, label })) });
+      }
+    });
+    return { userId: contactUserId, tags };
+  }
+
+  private normalizeContactMemoImages(input: unknown) {
+    if (!Array.isArray(input)) return [];
+    return input
+      .filter((image): image is string => typeof image === "string")
+      .map((image) => image.trim())
+      .filter((image) => image.startsWith("data:image/") || image.startsWith("https://") || image.startsWith("http://") || image.startsWith("/"))
+      .map((image) => image.slice(0, 4_000_000))
+      .filter(Boolean)
+      .slice(0, 3);
+  }
+
+  private contactMemoPayload(row: { contactId: string; body: string; images: unknown; updatedAt: Date }) {
+    return {
+      userId: row.contactId,
+      body: row.body ?? "",
+      images: this.normalizeContactMemoImages(row.images),
+      updatedAt: row.updatedAt.toISOString()
+    };
+  }
+
+  async listContactMemos(currentUserId: string) {
+    const rows = await this.prisma.contactMemo.findMany({
+      where: { ownerId: currentUserId },
+      orderBy: [{ updatedAt: "desc" }]
+    });
+    return rows.reduce<Record<string, ReturnType<ContactsService["contactMemoPayload"]>>>((result, row) => {
+      result[row.contactId] = this.contactMemoPayload(row);
+      return result;
+    }, {});
+  }
+
+  async updateContactMemo(currentUserId: string, contactUserId: string, body: string | undefined, images: unknown) {
+    if (currentUserId === contactUserId) throw new BadRequestException("Contact memos are only for other contacts.");
+    const contact = await this.prisma.user.findUnique({ where: { id: contactUserId }, select: { id: true } });
+    if (!contact) throw new NotFoundException("Contact was not found.");
+    await this.ensureNotBlocked(currentUserId, contactUserId);
+    if (!(await this.isEffectiveFriend(currentUserId, contactUserId))) {
+      throw new ConflictException("You must save this user as a contact before adding a memo.");
+    }
+    const trimmedBody = typeof body === "string" ? body.trim().slice(0, 2000) : "";
+    const normalizedImages = this.normalizeContactMemoImages(images);
+    const row = await this.prisma.contactMemo.upsert({
+      where: { ownerId_contactId: { ownerId: currentUserId, contactId: contactUserId } },
+      create: { ownerId: currentUserId, contactId: contactUserId, body: trimmedBody, images: normalizedImages },
+      update: { body: trimmedBody, images: normalizedImages }
+    });
+    return this.contactMemoPayload(row);
+  }
+
   async createGroupConversation(currentUserId: string, title: string, userIds: string[]): Promise<ConversationSummary> {
     const memberIds = Array.from(new Set(userIds.filter((id) => id && id !== currentUserId)));
     if (memberIds.length < 2) throw new BadRequestException("A group conversation needs at least two other members.");
@@ -448,7 +666,8 @@ export class ContactsService {
       joinedAt: member.joinedAt.toISOString(),
       invitedById: member.invitedById,
       invitedBy: member.invitedById ? inviterById.get(member.invitedById) ?? null : null,
-      isOwner: ownerId === member.userId
+      isOwner: ownerId === member.userId,
+      isAdmin: ownerId !== member.userId && member.isAdmin
     }));
   }
 
@@ -496,10 +715,49 @@ export class ContactsService {
     return { conversation: summary, members };
   }
 
-  async updateGroupProfile(currentUserId: string, conversationId: string, dto: { title?: string; avatarUrl?: string; announcement?: string; announcementScroll?: boolean }): Promise<ConversationSummary> {
+  async removeGroupMember(currentUserId: string, conversationId: string, targetUserId: string) {
+    const conversation = await this.getGroupForMember(currentUserId, conversationId);
+    const ownerId = await this.requireGroupManager(currentUserId, conversation);
+    if (targetUserId === ownerId) throw new BadRequestException("The group owner cannot be removed.");
+    const membership = await this.prisma.conversationMember.findUnique({
+      where: { conversationId_userId: { conversationId, userId: targetUserId } }
+    });
+    if (!membership) throw new NotFoundException("The selected user is not a member of this group.");
+    await this.prisma.conversationMember.delete({ where: { id: membership.id } });
+    const members = await this.listGroupMembers(currentUserId, conversationId);
+    return {
+      ok: true,
+      conversation: {
+        id: conversation.id,
+        type: "group" as const,
+        title: conversation.title ?? "Group chat",
+        avatarUrl: conversation.avatarUrl ?? undefined,
+        announcement: conversation.announcement ?? undefined,
+        announcementScroll: conversation.announcementScroll,
+        ownerId,
+        memberCount: members.length,
+        unreadCount: 0
+      },
+      members
+    };
+  }
+
+  async setGroupMemberAdmin(currentUserId: string, conversationId: string, targetUserId: string, isAdmin: boolean) {
     const conversation = await this.getGroupForMember(currentUserId, conversationId);
     const ownerId = await this.resolveGroupOwner(conversation);
-    if (ownerId !== currentUserId) throw new ForbiddenException("Only the group creator can update group settings.");
+    if (ownerId !== currentUserId) throw new ForbiddenException("Only the group owner can manage group administrators.");
+    if (targetUserId === ownerId) throw new BadRequestException("The group owner already has all group permissions.");
+    const membership = await this.prisma.conversationMember.findUnique({
+      where: { conversationId_userId: { conversationId, userId: targetUserId } }
+    });
+    if (!membership) throw new NotFoundException("The selected user is not a member of this group.");
+    await this.prisma.conversationMember.update({ where: { id: membership.id }, data: { isAdmin } });
+    return { ok: true, members: await this.listGroupMembers(currentUserId, conversationId) };
+  }
+
+  async updateGroupProfile(currentUserId: string, conversationId: string, dto: { title?: string; avatarUrl?: string; announcement?: string; announcementScroll?: boolean }): Promise<ConversationSummary> {
+    const conversation = await this.getGroupForMember(currentUserId, conversationId);
+    await this.requireGroupManager(currentUserId, conversation);
     const title = dto.title?.trim();
     const avatarUrl = dto.avatarUrl?.trim();
     const announcement = dto.announcement?.trim();
@@ -532,8 +790,7 @@ export class ContactsService {
 
   async dissolveGroup(currentUserId: string, conversationId: string) {
     const conversation = await this.getGroupForMember(currentUserId, conversationId);
-    const ownerId = await this.resolveGroupOwner(conversation);
-    if (ownerId !== currentUserId) throw new ForbiddenException("Only the group creator can dissolve the group.");
+    await this.requireGroupManager(currentUserId, conversation);
     const messages = await this.prisma.message.findMany({ where: { conversationId }, select: { id: true } });
     const messageIds = messages.map((message) => message.id);
     if (messageIds.length) await this.prisma.messageTranslation.deleteMany({ where: { messageId: { in: messageIds } } });
@@ -543,21 +800,21 @@ export class ContactsService {
     return { ok: true };
   }
   async createDirectConversation(currentUserId: string, otherUserId: string): Promise<ConversationSummary> {
-    if (currentUserId === otherUserId) throw new BadRequestException("Cannot create a direct conversation with yourself.");
+    const isSelfConversation = currentUserId === otherUserId;
     const other = await this.prisma.user.findUnique({ where: { id: otherUserId } });
     if (!other) throw new NotFoundException("User was not found.");
 
-    await this.ensureNotBlocked(currentUserId, otherUserId);
+    if (!isSelfConversation) await this.ensureNotBlocked(currentUserId, otherUserId);
     const id = directConversationId(currentUserId, otherUserId);
     const conversation = await this.prisma.conversation.upsert({
       where: { id },
-      update: {},
+      update: isSelfConversation ? { title: other.nickname } : {},
       create: {
         id,
         type: "DIRECT",
         title: other.nickname,
         members: {
-          create: [{ userId: currentUserId, lastReadAt: new Date() }, { userId: otherUserId }]
+          create: isSelfConversation ? [{ userId: currentUserId, lastReadAt: new Date() }] : [{ userId: currentUserId, lastReadAt: new Date() }, { userId: otherUserId }]
         }
       },
       include: {
@@ -579,6 +836,14 @@ export class ContactsService {
     };
   }
 }
+
+
+
+
+
+
+
+
 
 
 

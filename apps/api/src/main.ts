@@ -34,9 +34,16 @@ function parseOrigins(value: string) {
 
 function createRateLimitMiddleware(maxRequests: number, windowMs: number) {
   const buckets = new Map<string, RateLimitState>();
+  let requestCount = 0;
   return (request: HttpRequest, response: HttpResponse, next: NextFunction) => {
-    if (request.path === "/health") return next();
+    if (request.path === "/health" || request.path.startsWith("/health/")) return next();
     const now = Date.now();
+    requestCount += 1;
+    if (requestCount % 1000 === 0) {
+      for (const [bucketKey, bucket] of buckets) {
+        if (bucket.resetAt <= now) buckets.delete(bucketKey);
+      }
+    }
     const key = `${request.ip ?? request.socket.remoteAddress ?? "unknown"}:${request.path}`;
     const current = buckets.get(key);
     const state = !current || current.resetAt <= now ? { count: 0, resetAt: now + windowMs } : current;
@@ -61,7 +68,6 @@ async function bootstrap() {
     logger: isProduction ? ["error", "warn"] : ["log", "error", "warn", "debug", "verbose"]
   });
   const config = app.get(ConfigService);
-  app.getHttpAdapter().getInstance().set("trust proxy", true);
   const uploadBodyLimit = config.get<string>("MEDIA_UPLOAD_BODY_LIMIT", "750mb");
   app.use(expressRuntime.json({ limit: uploadBodyLimit }));
   app.use(expressRuntime.urlencoded({ extended: true, limit: uploadBodyLimit }));
@@ -77,12 +83,12 @@ async function bootstrap() {
     credentials: true
   });
 
-  app.use(
-    createRateLimitMiddleware(
-      config.get<number>("API_RATE_LIMIT_MAX", 120),
-      config.get<number>("API_RATE_LIMIT_WINDOW_MS", 60_000)
-    )
-  );
+  const configuredRateLimitMax = Number(config.get<string>("API_RATE_LIMIT_MAX", "120"));
+  const configuredRateLimitWindowMs = Number(config.get<string>("API_RATE_LIMIT_WINDOW_MS", "60000"));
+  app.use(createRateLimitMiddleware(
+    Number.isFinite(configuredRateLimitMax) && configuredRateLimitMax > 0 ? Math.floor(configuredRateLimitMax) : 120,
+    Number.isFinite(configuredRateLimitWindowMs) && configuredRateLimitWindowMs > 0 ? Math.floor(configuredRateLimitWindowMs) : 60_000
+  ));
 
   app.useGlobalFilters(new ErrorLogFilter(config.get<string>("API_ERROR_LOG_DIR")));
 

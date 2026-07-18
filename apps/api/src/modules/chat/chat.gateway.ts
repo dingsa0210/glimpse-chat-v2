@@ -1,4 +1,4 @@
-import { SUPPORTED_TRANSLATION_LANGUAGES, type CallSignalPayload, type MessagePayload, type TranslationLanguage } from "@glimpse/shared";
+﻿import { SUPPORTED_TRANSLATION_LANGUAGES, type CallSignalPayload, type MessagePayload } from "@glimpse/shared";
 import {
   ConnectedSocket,
   MessageBody,
@@ -37,6 +37,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private readonly activeUserSockets = new Map<string, number>();
 
+  getPresenceSummary() {
+    return {
+      onlineUsers: this.activeUserSockets.size,
+      activeConnections: Array.from(this.activeUserSockets.values()).reduce((total, count) => total + count, 0)
+    };
+  }
+
   constructor(
     private readonly storage: ChatStorageService,
     private readonly auth: AuthService,
@@ -53,7 +60,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     try {
       client.data.user = await this.auth.verifyAccessToken(token);
-      await client.join(`user:${client.data.user.id}`);
+      void client.join(`user:${client.data.user.id}`);
       this.markUserOnline(client.data.user.id);
       client.emit("presence:state", { onlineUserIds: Array.from(this.activeUserSockets.keys()) });
     } catch {
@@ -86,12 +93,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage("conversation:join")
   async joinConversation(@MessageBody("conversationId") conversationId: string, @ConnectedSocket() client: AuthenticatedSocket) {
     const user = this.requireUser(client);
-    void client.join(`conversation:${conversationId}`);
     try {
-      client.emit("conversation:history", {
-        conversationId,
-        messages: await this.storage.getHistory(conversationId, user.id, { limit: 50 })
-      });
+      const history = await this.storage.getHistoryPage(conversationId, user.id, { limit: 50 });
+      await client.join(`conversation:${conversationId}`);
+      client.emit("conversation:history", history);
       const readAt = await this.storage.markConversationRead(conversationId, user.id);
       this.broadcastReadReceipt(conversationId, user.id, readAt);
     } catch (error) {
@@ -124,6 +129,24 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+
+  @SubscribeMessage("typing")
+  async relayTyping(@MessageBody() payload: { conversationId?: string }, @ConnectedSocket() client: AuthenticatedSocket) {
+    const user = this.requireUser(client);
+    if (!payload.conversationId) return { ok: false };
+    try {
+      await this.storage.ensureConversationMember(payload.conversationId, user.id);
+      client.to(`conversation:${payload.conversationId}`).emit("typing", {
+        conversationId: payload.conversationId,
+        userId: user.id,
+        name: user.nickname,
+        createdAt: new Date().toISOString()
+      });
+      return { ok: true };
+    } catch (error) {
+      throw new WsException(error instanceof Error ? error.message : "Could not relay typing state.");
+    }
+  }
   @SubscribeMessage("message:send")
   async sendMessage(@MessageBody() payload: MessagePayload, @ConnectedSocket() client: AuthenticatedSocket) {
     const user = this.requireUser(client);
@@ -137,10 +160,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         },
         user.id
       );
-      const memberIds = await this.storage.getConversationMemberIds(message.conversationId, user.id);
-      let recipients = this.server.to(`conversation:${message.conversationId}`);
-      for (const memberId of memberIds) recipients = recipients.to(`user:${memberId}`);
-      recipients.emit("message:new", message);
+      this.server.to(`conversation:${message.conversationId}`).emit("message:new", message);
       return { ok: true, messageId: message.id };
     } catch (error) {
       throw new WsException(error instanceof Error ? error.message : "Could not send message.");
@@ -175,7 +195,16 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         fromName: user.nickname,
         createdAt: new Date().toISOString()
       };
-      client.to(`conversation:${payload.conversationId}`).emit("call:signal", event);
+      const selectedRecipients = payload.targetUserId
+        ? [payload.targetUserId]
+        : payload.participantUserIds?.filter((userId) => userId && userId !== user.id) ?? [];
+      if (selectedRecipients.length) {
+        const recipientIds = Array.from(new Set(selectedRecipients));
+        await Promise.all(recipientIds.map((recipientId) => this.storage.ensureConversationMember(payload.conversationId, recipientId)));
+        this.server.to(recipientIds.map((recipientId) => `user:${recipientId}`)).emit("call:signal", event);
+      } else {
+        client.to(`conversation:${payload.conversationId}`).emit("call:signal", event);
+      }
       return { ok: true, callId: payload.callId, signalType: payload.signalType };
     } catch (error) {
       throw new WsException(error instanceof Error ? error.message : "Could not relay call signal.");
@@ -183,7 +212,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   private async withTranslations(payload: MessagePayload) {
-    if (payload.type !== "text" || !payload.body?.trim()) return payload;
+    if (payload.type !== "text" || !payload.body?.trim() || payload.body.startsWith("glimpse-sticker:v1:") || payload.body.startsWith("glimpse-location:v1:") || payload.body.startsWith("glimpse-translation-edit-notice:v1:")) return payload;
     const targetLanguage = payload.targetLanguage && SUPPORTED_TRANSLATION_LANGUAGES.includes(payload.targetLanguage) ? payload.targetLanguage : "en";
     const translated = await this.translation.translateText(payload.body, "auto", targetLanguage);
     return {
@@ -200,12 +229,44 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       readAt: readAt.toISOString()
     });
   }
+  @SubscribeMessage("message:delete")
+  async deleteMessages(@MessageBody() payload: { conversationId?: string; messageIds?: string[] }, @ConnectedSocket() client: AuthenticatedSocket) {
+    const user = this.requireUser(client);
+    try {
+      if (!payload.conversationId || !Array.isArray(payload.messageIds)) throw new WsException("Invalid delete payload.");
+      const messages = await this.storage.deleteMessages(payload.conversationId, payload.messageIds, user.id);
+      const messageIds = messages.map((message) => message.id);
+      this.server.to(`conversation:${payload.conversationId}`).emit("message:deleted", { conversationId: payload.conversationId, messageIds });
+      return { ok: true, conversationId: payload.conversationId, messageIds };
+    } catch (error) {
+      throw new WsException(error instanceof Error ? error.message : "Could not delete messages.");
+    }
+  }
+
+  removeUserFromConversation(conversationId: string, userId: string, removedById: string, memberCount: number) {
+    this.server.in(`user:${userId}`).socketsLeave(`conversation:${conversationId}`);
+    this.server.to(`user:${userId}`).emit("conversation:removed", { conversationId, removedById });
+    this.server.to(`conversation:${conversationId}`).emit("group:member-removed", { conversationId, userId, removedById, memberCount });
+  }
+
+  groupMemberAdminChanged(conversationId: string, userId: string, isAdmin: boolean, changedById: string) {
+    this.server.to(`conversation:${conversationId}`).emit("group:member-admin-changed", { conversationId, userId, isAdmin, changedById });
+  }
+
+  translationUpdated(message: MessagePayload) {
+    this.server.to(`conversation:${message.conversationId}`).emit("message:translation-updated", message);
+  }
+
+  publishMessage(message: MessagePayload) {
+    this.server.to(`conversation:${message.conversationId}`).emit("message:new", message);
+  }
 
   private requireUser(client: AuthenticatedSocket) {
     if (!client.data.user) throw new WsException("Unauthorized.");
     return client.data.user;
   }
 }
+
 
 
 

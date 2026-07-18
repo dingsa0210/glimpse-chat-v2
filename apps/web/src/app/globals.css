@@ -1,4 +1,4 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -47,9 +47,31 @@ textarea {
   animation: message-new-attention 1.2s ease-out;
 }
 
+@keyframes glimpse-media-target-flash {
+  0%,
+  12%,
+ 38%,
+ 62%,
+ 88%,
+ 100% {
+    filter: brightness(1);
+    outline: 0 solid transparent;
+  }
+ 25%,
+ 75% {
+    filter: brightness(1.55);
+    outline: 4px solid rgba(15, 127, 140, 0.82);
+    outline-offset: 2px;
+  }
+}
+
+.glimpse-media-target-flash {
+  animation: glimpse-media-target-flash 1.8s ease-in-out;
+}
+
 @keyframes glimpse-notice-fade {
   0%,
-  78% {
+  84% {
     opacity: 1;
   }
   100% {
@@ -58,7 +80,7 @@ textarea {
 }
 
 .glimpse-notice-fade {
-  animation: glimpse-notice-fade 3s ease-in forwards;
+  animation: glimpse-notice-fade 8s ease-in forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -66,7 +88,27 @@ textarea {
     animation: none;
   }
 
+  .glimpse-media-target-flash {
+    animation: none;
+  }
+
   .glimpse-notice-fade {
+    animation: none;
+  }
+}
+
+
+@keyframes glimpse-slogan-marquee {
+  0%, 18% { transform: translateX(0); }
+  82%, 100% { transform: translateX(calc(-100% + 12rem)); }
+}
+
+.glimpse-slogan-marquee {
+  animation: glimpse-slogan-marquee 14s linear infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glimpse-slogan-marquee {
     animation: none;
   }
 }

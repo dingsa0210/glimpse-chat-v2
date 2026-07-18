@@ -1,79 +1,174 @@
-version: "3.9"
+name: glimpse-chat
+
+# ====================================================================
+# Glimpse Chat - 容器化编排
+#
+# 基础设施复用策略（复用宿主已运行实例，避免端口/数据冲突）：
+#   - PostgreSQL：复用宿主 postgres（postgres:16-alpine），
+#       通过独立库名隔离，默认库名 glimpse_chat_v2
+#   - Redis：复用宿主 redis，通过 db 3 隔离
+#       REDIS_URL=redis://host.docker.internal:6379/3
+#
+# 启动顺序（由 depends_on + healthcheck 编排，全自动）：
+#   1. minio (长驻) + minio-init (一次性建 bucket)
+#   2. db-init  (一次性建库 glimpse_chat_v2)
+#   3. db-seed  (一次性导入 database/database-sanitized.sql 种子数据)
+#   4. api      (长驻；检测到种子已导入则跳过 prisma migrate，直接启动)
+#   5. web      (长驻)
+#
+# 容器内通过 host.docker.internal 访问宿主 postgres/redis
+# （Docker Desktop 自带；Linux 原生 Docker 由 extra_hosts 映射）。
+#
+# 可选环境变量（在项目根 .env 中设置覆盖默认值）：
+#   DB_NAME=glimpse_chat_v2
+#   DATABASE_URL=postgresql://user:pass@host.docker.internal:5432/glimpse_chat_v2
+#   ADMIN_DATABASE_URL=postgresql://user:pass@host.docker.internal:5432/postgres
+#   REDIS_URL=redis://host.docker.internal:6379/3
+#   SEED_SKIP=true   # 跳过种子数据导入（使用空库 + prisma migrate）
+# ====================================================================
 
 services:
-  # ==================== PostgreSQL 数据库 ====================
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: glimpse-minio
+    command: server /data --console-address :9001
     environment:
-      POSTGRES_USER: glimpse
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-glimpse_secret_change_me}
-      POSTGRES_DB: glimpse_chat
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      MINIO_ROOT_USER: glimpse
+      MINIO_ROOT_PASSWORD: glimpse_dev_password
     ports:
-      - "127.0.0.1:5432:5432"
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - glimpse_minio:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U glimpse -d glimpse_chat"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # ==================== Redis (可选，预留) ====================
-  redis:
-    image: redis:7-alpine
+      start_period: 15s
     restart: unless-stopped
-    volumes:
-      - redisdata:/data
-    ports:
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
-  # ==================== API 服务 (NestJS) ====================
+  # 一次性任务：创建 api 所需的 S3 bucket
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 glimpse glimpse_dev_password &&
+      mc mb --ignore-existing local/glimpse-chat &&
+      mc anonymous set download local/glimpse-chat
+      "
+    restart: "no"
+
+  # 一次性任务：创建目标业务库（如不存在）
+  db-init:
+    image: postgres:16-alpine
+    container_name: glimpse-db-init
+    environment:
+      DB_NAME: ${DB_NAME:-glimpse_chat_v2}
+      ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL:-postgresql://glimpse:glimpse_secret_change_me@host.docker.internal:5432/postgres}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./db-init.sh:/usr/local/bin/db-init.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/db-init.sh"]
+    restart: "no"
+
+  # 一次性任务：导入 database/database-sanitized.sql 种子数据
+  #   - 幂等：若 _prisma_migrations 表已存在则跳过
+  #   - 导入后自动清理 _prisma_migrations 中的 failed 记录
+  #   - 设 SEED_SKIP=true 可跳过（在项目根 .env 中设置）
+  db-seed:
+    image: postgres:16-alpine
+    container_name: glimpse-db-seed
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://glimpse:glimpse_secret_change_me@host.docker.internal:5432/glimpse_chat_v2}
+      SEED_SKIP: ${SEED_SKIP:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./database:/seed:ro
+      - ./db-seed.sh:/usr/local/bin/db-seed.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/db-seed.sh"]
+    restart: "no"
+
   api:
     build:
       context: .
-      dockerfile: Dockerfile.api
-    restart: unless-stopped
+      dockerfile: Dockerfile
+      target: api-runtime
+    image: glimpsechat.com-api:latest
     depends_on:
-      db:
-        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      db-seed:
+        condition: service_completed_successfully
+    # 让容器能通过 host.docker.internal 访问宿主上已运行的 postgres/redis
+    # （Docker Desktop 自带；Linux 原生 Docker 需此映射才能解析）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # 加载项目根 .env，用户在 .env 配的所有变量直接注入容器
+    # required: false 表示 .env 不存在也不报错（用 environment 默认值兜底）
+    env_file:
+      - path: .env
+        required: false
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://glimpse:${DB_PASSWORD:-glimpse_secret_change_me}@db:5432/glimpse_chat
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change_me_to_a_random_64_char_string}
-      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-7d}
-      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
-      PORT: 4100
-      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
-      REDIS_URL: redis://redis:6379
-      MEDIA_STORAGE_DIR: /app/uploads
-      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
-      API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-120}
-      API_RATE_LIMIT_WINDOW_MS: ${API_RATE_LIMIT_WINDOW_MS:-60000}
-    volumes:
-      - uploads:/app/uploads
+      PORT: "4100"
+      # 这些变量优先从 .env 读取（用户可改），未设则用默认值
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3001,http://127.0.0.1:3001}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:3001}
+      # 复用宿主 postgres:16，用独立库名隔离（默认 glimpse_chat_v2）。
+      # 库已由 db-init 服务创建，种子数据由 db-seed 服务导入。
+      DATABASE_URL: ${DATABASE_URL:-postgresql://glimpse:glimpse_secret_change_me@host.docker.internal:5432/glimpse_chat_v2}
+      # 复用宿主 redis，通过 db 3 隔离（避开常用的 db 0/1/2）
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379/3}
+      # JWT 密钥从 .env 读取（必改），未设时用开发占位值兜底
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev_jwt_access_secret_change_me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev_jwt_refresh_secret_change_me}
+      # MinIO 对象存储（compose 自建）
+      S3_ENDPOINT: "http://minio:9000"
+      S3_REGION: "us-east-1"
+      S3_BUCKET: "glimpse-chat"
+      S3_ACCESS_KEY: "glimpse"
+      S3_SECRET_KEY: "glimpse_dev_password"
+      # 行为开关
+      CHAT_STORAGE: "memory"
+      DATABASE_CONNECT_ON_START: "false"
+      TRANSLATION_PROVIDER: ${TRANSLATION_PROVIDER:-mock}
+      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-true}
     ports:
-      - "127.0.0.1:4100:4100"
+      - "4101:4100"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
 
-  # ==================== Web 前端 (Next.js) ====================
   web:
     build:
       context: .
-      dockerfile: Dockerfile.web
-    restart: unless-stopped
+      dockerfile: Dockerfile
+      target: web-runtime
+      args:
+        # NEXT_PUBLIC_* 在前端构建时注入，浏览器通过宿主端口访问 api
+        # 从 .env 读取（改值后需 docker compose build web 重建镜像）
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4101}
+        NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-http://localhost:4101}
+    image: glimpsechat.com-web:latest
     depends_on:
-      - api
-    environment:
-      NODE_ENV: production
+      api:
+        condition: service_healthy
     ports:
-      - "3000:3000"
+      - "3001:3000"
+    restart: unless-stopped
 
 volumes:
-  pgdata:
-  redisdata:
-  uploads:
+  glimpse_minio:

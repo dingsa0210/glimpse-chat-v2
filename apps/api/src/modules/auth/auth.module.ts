@@ -1,5 +1,6 @@
-import { Module } from "@nestjs/common";
+﻿import { Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
+import { MailModule } from "../mail/mail.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { VerificationModule } from "../verification/verification.module";
 import { AuthController } from "./auth.controller";
@@ -8,7 +9,7 @@ import { AdminGuard } from "./admin.guard";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 
 @Module({
-  imports: [PrismaModule, JwtModule.register({}), VerificationModule],
+  imports: [PrismaModule, MailModule, VerificationModule, JwtModule.register({})],
   controllers: [AuthController],
   providers: [AuthService, JwtAuthGuard, AdminGuard],
   exports: [AuthService, JwtAuthGuard, AdminGuard]

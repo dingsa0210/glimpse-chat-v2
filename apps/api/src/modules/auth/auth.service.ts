@@ -2,11 +2,12 @@
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import * as argon2 from "argon2";
-import { PrismaService } from "../prisma/prisma.service";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import { MailService } from "../mail/mail.service";
+import { PrismaService } from "../prisma/prisma.service";
 import { VerificationService } from "../verification/verification.service";
 import type { AccessTokenPayload, AuthenticatedUser } from "./auth.types";
-import type { ChangePasswordDto, LoginDto, RegisterDto, SendCodeDto, UpdateProfileDto } from "./dto/auth.dto";
+import type { ChangePasswordDto, ForgotPasswordDto, LoginDto, RegisterDto, ResetPasswordDto, SendCodeDto, UpdateProfileDto } from "./dto/auth.dto";
 
 
 const LOGIN_FAILURE_LIMIT = 5;
@@ -60,6 +61,8 @@ function toAuthenticatedUser(user: {
   profileSignature: string | null;
   language: string;
   role: string;
+  isSuperAdmin?: boolean;
+  adminPermissions?: string[];
 }, adminEmails: Set<string>): AuthenticatedUser {
   return {
     id: user.id,
@@ -78,7 +81,9 @@ function toAuthenticatedUser(user: {
     bio: user.profileBio,
     signature: user.profileSignature,
     language: toLanguage(user.language),
-    role: toRole(user.role, user.email, adminEmails)
+    role: toRole(user.role, user.email, adminEmails),
+    isSuperAdmin: Boolean(user.isSuperAdmin || (user.email && adminEmails.has(user.email.toLowerCase()))),
+    adminPermissions: user.adminPermissions ?? []
   };
 }
 
@@ -89,41 +94,32 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
-    private readonly mail: MailService,
-    private readonly verification: VerificationService
+    private readonly verification: VerificationService,
+    private readonly mail: MailService
   ) {}
 
   async sendVerificationCode(dto: SendCodeDto) {
-    const email = dto.email.trim().toLowerCase();
-
+    const email = this.verification.normalizeEmail(dto.email);
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) throw new ConflictException("Email is already registered.");
-
-    const canSend = await this.verification.canSend(email);
-    if (!canSend.allowed) {
-      throw new HttpException(
-        `Please wait ${canSend.retryAfterSeconds ?? 60} seconds before requesting another code.`,
-        HttpStatus.TOO_MANY_REQUESTS
-      );
+    const sendState = await this.verification.canSend(email);
+    if (!sendState.ok) {
+      throw new HttpException(`Please wait ${sendState.retryAfterSeconds} seconds before requesting another code.`, HttpStatus.TOO_MANY_REQUESTS);
     }
-
-    const code = this.verification.generateCode();
+    const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+    // Persist the code only after SMTP accepts the message. A failed send must
+    // not consume the user's cooldown or leave an unusable code behind.
+    const delivery = await this.mail.sendVerificationCode(email, code);
     await this.verification.saveCode(email, code);
-    await this.mail.sendVerificationCode(email, code);
-
-    return { ok: true };
+    return { ok: true, status: delivery.status, warnings: delivery.warnings };
   }
 
   async register(dto: RegisterDto) {
     const email = dto.email.trim().toLowerCase();
-
-    const codeValid = await this.verification.verifyCode(email, dto.code);
-    if (!codeValid) {
-      throw new BadRequestException("Invalid or expired verification code.");
-    }
-
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) throw new ConflictException("Email is already registered.");
+    const codeOk = await this.verification.consumeCode(email, dto.code);
+    if (!codeOk) throw new BadRequestException("Invalid or expired verification code.");
 
     const user = await this.prisma.user.create({
       data: {
@@ -131,7 +127,8 @@ export class AuthService {
         passwordHash: await argon2.hash(dto.password, PASSWORD_HASH_OPTIONS),
         nickname: dto.nickname.trim(),
         language: (dto.language ?? "en").toUpperCase() as "ZH" | "EN",
-        role: parseAdminEmails(this.config.get<string>("ADMIN_EMAILS", "")).has(email) ? "ADMIN" : "USER"
+        role: parseAdminEmails(this.config.get<string>("ADMIN_EMAILS", "")).has(email) ? "ADMIN" : "USER",
+        isSuperAdmin: parseAdminEmails(this.config.get<string>("ADMIN_EMAILS", "")).has(email)
       }
     });
 
@@ -158,6 +155,32 @@ export class AuthService {
 
 
 
+  async requestPasswordReset(dto: ForgotPasswordDto) {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email }, select: { id: true, email: true, nickname: true, disabledAt: true } });
+    if (user && !user.disabledAt) {
+      const rawToken = randomBytes(32).toString("hex");
+      const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+      await this.prisma.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
+      await this.prisma.passwordResetToken.create({ data: { userId: user.id, tokenHash, expiresAt: new Date(Date.now() + 30 * 60 * 1000) } });
+      const configuredWebUrl = this.config.get<string>("PUBLIC_WEB_URL", this.config.get<string>("WEB_ORIGIN", "http://localhost:3101"));
+      const webUrl = (configuredWebUrl.split(",")[0] ?? "http://localhost:3101").trim().replace(/\/+$/, "");
+      await this.mail.sendPasswordResetLink(email, `${webUrl}/?resetToken=${encodeURIComponent(rawToken)}`, user.nickname);
+    }
+    // Keep the response generic so the endpoint does not disclose account existence.
+    return { ok: true, queued: true };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const tokenHash = createHash("sha256").update(dto.token.trim()).digest("hex");
+    const record = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+    if (!record || record.usedAt || record.expiresAt.getTime() <= Date.now()) throw new BadRequestException("The password reset link is invalid or expired.");
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: record.userId }, data: { passwordHash: await argon2.hash(dto.newPassword, PASSWORD_HASH_OPTIONS) } }),
+      this.prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } })
+    ]);
+    return { ok: true };
+  }
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     const current = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!current) throw new UnauthorizedException("Invalid or expired token.");
@@ -173,6 +196,15 @@ export class AuthService {
       ...(dto.profileEmailPublic !== undefined ? { profileEmailPublic: dto.profileEmailPublic } : {}),
       ...(dto.profilePhonePublic !== undefined ? { profilePhonePublic: dto.profilePhonePublic } : {})
     };
+    if (dto.phone !== undefined) {
+      const nextPhone = cleanOptionalText(dto.phone);
+      if (nextPhone && nextPhone !== current.phone) {
+        const existingPhoneUser = await this.prisma.user.findUnique({ where: { phone: nextPhone } });
+        if (existingPhoneUser && existingPhoneUser.id !== userId) throw new ConflictException("Phone is already in use.");
+      }
+      data.phone = nextPhone;
+      if (!nextPhone) data.profilePhonePublic = false;
+    }
     if (dto.publicId !== undefined) {
       const nextPublicId = dto.publicId.trim().toLowerCase();
       if (!PUBLIC_ID_PATTERN.test(nextPublicId)) throw new BadRequestException("ID must be 3-32 characters and can only contain letters, numbers, dot, underscore, or hyphen.");
@@ -213,7 +245,7 @@ export class AuthService {
       });
       const user = await this.prisma.user.findUnique({
         where: { id: payload.sub },
-        select: { id: true, email: true, phone: true, publicId: true, publicIdUpdatedAt: true, profilePublic: true, profileEmailPublic: true, profilePhonePublic: true, nickname: true, avatarUrl: true, profileCompany: true, profileTitle: true, profileLocation: true, profileBio: true, profileSignature: true, language: true, role: true, disabledAt: true }
+        select: { id: true, email: true, phone: true, publicId: true, publicIdUpdatedAt: true, profilePublic: true, profileEmailPublic: true, profilePhonePublic: true, nickname: true, avatarUrl: true, profileCompany: true, profileTitle: true, profileLocation: true, profileBio: true, profileSignature: true, language: true, role: true, isSuperAdmin: true, adminPermissions: true, disabledAt: true }
       });
       if (!user || user.disabledAt) throw new UnauthorizedException("Account is disabled.");
       return toAuthenticatedUser(user, parseAdminEmails(this.config.get<string>("ADMIN_EMAILS", "")));
@@ -263,7 +295,9 @@ export class AuthService {
       bio: user.bio,
       signature: user.signature,
       language: user.language,
-      role: user.role
+      role: user.role,
+      isSuperAdmin: user.isSuperAdmin,
+      adminPermissions: user.adminPermissions ?? []
     };
     const accessToken = await this.jwt.signAsync(payload, {
       secret: this.config.get<string>("JWT_ACCESS_SECRET", "dev_access_secret_change_me"),
@@ -272,5 +306,8 @@ export class AuthService {
     return { accessToken, user };
   }
 }
+
+
+
 
 
