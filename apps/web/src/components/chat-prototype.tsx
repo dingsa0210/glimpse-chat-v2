@@ -11310,7 +11310,7 @@ export function ChatPrototype() {
                 </div>
               </div>
             ) : null}
-            {!globalSearchActive && tab === "me" ? (
+            {adminModalOpen || (!globalSearchActive && tab === "me") ? (
               <div className="space-y-4 p-1 sm:p-2">
                  <form className={profilePageCardClass} onSubmit={handleSaveProfile}>
                   <div className="flex items-start justify-between gap-3">
