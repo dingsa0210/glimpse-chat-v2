@@ -102,6 +102,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: api-runtime
+      network: host
     image: glimpsechat.com-api:latest
     depends_on:
       minio-init:
@@ -157,6 +158,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: web-runtime
+      network: host
       args:
         # NEXT_PUBLIC_* 在前端构建时注入，浏览器通过宿主端口访问 api
         # 从 .env 读取（改值后需 docker compose build web 重建镜像）

@@ -111,7 +111,10 @@ async function bootstrap() {
     SwaggerModule.setup("docs", app, document);
   }
 
-  await app.listen(config.get<number>("PORT", 4100), "0.0.0.0");
+  await app.listen(
+    config.get<number>("PORT", 4100),
+    config.get<string>("API_BIND_HOST", "0.0.0.0")
+  );
 }
 
 void bootstrap();

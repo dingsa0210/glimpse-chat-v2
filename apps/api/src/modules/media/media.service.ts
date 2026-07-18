@@ -126,11 +126,14 @@ export class MediaService {
     if (safeName !== fileName) throw new NotFoundException("Media file was not found.");
     const filePath = this.resolveExistingFile(safeName);
     const fileSize = statSync(filePath).size;
-    const contentType = this.mimeForExtension(extname(safeName).toLowerCase());
+    const downloadName = this.cleanFileName(originalName || safeName);
+    const extension = extname(safeName).toLowerCase();
+    const contentType = extension === ".webm" && /^voice-/i.test(downloadName)
+      ? "audio/webm"
+      : this.mimeForExtension(extension);
     response.setHeader("Content-Type", contentType);
     response.setHeader("Accept-Ranges", "bytes");
     response.setHeader("X-Content-Type-Options", "nosniff");
-    const downloadName = this.cleanFileName(originalName || safeName);
     response.setHeader("Content-Disposition", this.contentDisposition(downloadName, forceDownload ? "attachment" : "inline"));
     const range = rangeHeader?.match(/^bytes=(\d*)-(\d*)$/i);
     if (range) {
