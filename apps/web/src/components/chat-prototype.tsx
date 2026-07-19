@@ -3403,6 +3403,7 @@ export function ChatPrototype() {
   const avatarCropGestureRef = useRef<{ pointers: Map<number, AvatarCropOffset>; lastCenter: AvatarCropOffset | null; lastDistance: number | null; }>({ pointers: new Map(), lastCenter: null, lastDistance: null });
   const pendingScrollToBottomRef = useRef(false);
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>("smooth");
+  const scrollToBottomRequestRef = useRef(0);
   const translationEditScrollRef = useRef<{ conversationId: string; scrollTop: number; expiresAt: number } | null>(null);
   const selectedIdRef = useRef(selectedId);
   const mobilePaneRef = useRef(mobilePane);
@@ -4846,7 +4847,9 @@ export function ChatPrototype() {
       setHistoryEndReached((current) => Object.fromEntries(mapped.map((item) => [item.id, current[item.id] ?? false])));
       const first = mapped[0];
       const nextSelectedId = mapped.some((item) => item.id === selectedIdRef.current) ? selectedIdRef.current : first?.id;
-      if (nextSelectedId && nextSelectedId !== selectedIdRef.current) setSelectedId(nextSelectedId);
+      const selectedConversationChanged = Boolean(nextSelectedId && nextSelectedId !== selectedIdRef.current);
+      if (nextSelectedId) selectedIdRef.current = nextSelectedId;
+      if (nextSelectedId && selectedConversationChanged) setSelectedId(nextSelectedId);
       if (nextSelectedId) await loadConversationHistory(nextSelectedId, token, "auto");
     } catch (error) {
       setConversationsFailed(true);
@@ -6133,9 +6136,9 @@ export function ChatPrototype() {
   }
 
   function isConversationOpen(conversationId: string) {
-    if (conversationId !== selectedIdRef.current || tabRef.current !== "chats") return false;
+    if (conversationId !== selectedIdRef.current) return false;
     if (typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches) return true;
-    return mobilePaneRef.current === "chat";
+    return tabRef.current === "chats" && mobilePaneRef.current === "chat";
   }
 
   function scrollMessagesToBottom(behavior: ScrollBehavior = "smooth") {
@@ -6147,6 +6150,14 @@ export function ChatPrototype() {
   function requestScrollToBottom(behavior: ScrollBehavior = "smooth") {
     pendingScrollBehaviorRef.current = behavior;
     pendingScrollToBottomRef.current = true;
+    if (typeof window === "undefined") return;
+    const requestId = ++scrollToBottomRequestRef.current;
+    const scroll = () => {
+      if (scrollToBottomRequestRef.current !== requestId) return;
+      scrollMessagesToBottom(behavior);
+    };
+    window.requestAnimationFrame(scroll);
+    window.setTimeout(scroll, 120);
   }
 
   function restoreTranslationEditScrollPosition() {
