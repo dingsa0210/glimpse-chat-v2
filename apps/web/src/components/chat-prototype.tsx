@@ -6,6 +6,7 @@ import { ArrowLeft, ArrowUpRight, AudioLines, Ban, Bell, Bot, Brush, Check, Chec
 import { createPortal } from "react-dom";
 import type { WheelEvent as ReactWheelEvent } from "react";
 import { io, Socket } from "socket.io-client";
+import { clearOfflineWorkspace, readOfflineWorkspace, requestPersistentOfflineStorage, writeOfflineWorkspace } from "../lib/offline-chat-cache";
 import { splitTextForTts } from "../lib/tts";
 import { translationAttributionParts } from "../lib/translation-attribution";
 import { GlimpseAssistant } from "./glimpse-assistant";
@@ -2421,9 +2422,20 @@ async function apiJson<T>(path: string, token: string, init?: RequestInit, timeo
   }, timeoutMs);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(apiErrorMessage(data, "Request failed. Please try again."));
+    throw new ApiRequestError(response.status, apiErrorMessage(data, "Request failed. Please try again."));
   }
   return data as T;
+}
+
+class ApiRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+function isAuthenticationError(error: unknown) {
+  return error instanceof ApiRequestError && (error.status === 401 || error.status === 403);
 }
 
 const speechAccentOptions: Array<{ code: SpeechAccent; label: string }> = [
@@ -3241,6 +3253,8 @@ export function ChatPrototype() {
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(() => new Set());
   const [accessToken, setAccessToken] = useState("");
   const [currentUser, setCurrentUser] = useState<PublicUser | null>(null);
+  const [sessionRestorePending, setSessionRestorePending] = useState(true);
+  const [offlineCacheReadyUserId, setOfflineCacheReadyUserId] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -4490,6 +4504,43 @@ export function ChatPrototype() {
   }, [messagesByConversation]);
 
   useEffect(() => {
+    const userId = currentUser?.id;
+    let cancelled = false;
+    setOfflineCacheReadyUserId("");
+    if (!userId) return () => { cancelled = true; };
+
+    requestPersistentOfflineStorage();
+    void readOfflineWorkspace<Conversation>(userId).then((snapshot) => {
+      if (cancelled) return;
+      if (snapshot) {
+        setConversations((current) => current.length ? current : snapshot.conversations);
+        setMessagesByConversation((current) => {
+          const next = { ...snapshot.messagesByConversation };
+          for (const [conversationId, messages] of Object.entries(current)) {
+            next[conversationId] = mergeMessages(next[conversationId] ?? [], messages);
+          }
+          return next;
+        });
+        setMessageLoadStates((current) => ({
+          ...Object.fromEntries(Object.keys(snapshot.messagesByConversation).map((conversationId) => [conversationId, "ready" as const])),
+          ...current
+        }));
+      }
+      setOfflineCacheReadyUserId(userId);
+    });
+    return () => { cancelled = true; };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId || offlineCacheReadyUserId !== userId) return;
+    const timer = window.setTimeout(() => {
+      void writeOfflineWorkspace(userId, conversations, messagesByConversation);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [conversations, currentUser?.id, messagesByConversation, offlineCacheReadyUserId]);
+
+  useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
 
@@ -4601,10 +4652,19 @@ export function ChatPrototype() {
   }, [uiLanguage]);
   useEffect(() => {
     const stored = getStoredAuth();
-    if (!stored) return;
+    if (!stored) {
+      setSessionRestorePending(false);
+      return;
+    }
 
     let cancelled = false;
+    setAccessToken(stored.accessToken);
+    setCurrentUser(stored.user);
+    setConnectionState(navigator.onLine ? "reconnecting" : "offline");
+    setSessionRestorePending(false);
+
     async function restoreSession(auth: AuthResponse) {
+      if (!navigator.onLine) return;
       try {
         const data = await apiJson<{ user: PublicUser }>("/auth/me", auth.accessToken);
         if (cancelled) return;
@@ -4612,12 +4672,17 @@ export function ChatPrototype() {
         storeAuth(restored);
         setAccessToken(restored.accessToken);
         setCurrentUser(restored.user);
-      } catch {
-        clearStoredAuth();
-        if (!cancelled) {
+      } catch (error) {
+        if (cancelled) return;
+        if (isAuthenticationError(error)) {
+          clearStoredAuth();
+          void clearOfflineWorkspace(auth.user.id);
           setAccessToken("");
           setCurrentUser(null);
           setAuthError(appCopy[uiLanguage].sessionExpired);
+        } else {
+          setIsConnected(false);
+          setConnectionState("offline");
         }
       }
     }
@@ -4660,7 +4725,9 @@ export function ChatPrototype() {
       });
     });
     socket.on("auth:error", (payload: { message?: string }) => {
+      const expiredUserId = currentUser.id;
       clearStoredAuth();
+      void clearOfflineWorkspace(expiredUserId);
       setAccessToken("");
       setCurrentUser(null);
       setIsConnected(false);
@@ -4943,7 +5010,12 @@ export function ChatPrototype() {
       if (nextSelectedId) await loadConversationHistory(nextSelectedId, token, "auto");
     } catch (error) {
       setConversationsFailed(true);
-      setNotice(extractErrorMessage(error, t.requestFailed));
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setIsConnected(false);
+        setConnectionState("offline");
+      } else {
+        setNotice(extractErrorMessage(error, t.requestFailed));
+      }
     } finally {
       setConversationsLoading(false);
     }
@@ -4963,8 +5035,14 @@ export function ChatPrototype() {
       queueAutoTranslations(data.messages, translationTargetLanguageRef.current);
       if (data.conversationId === selectedIdRef.current && isConversationOpen(data.conversationId)) requestScrollToBottom(scrollBehavior);
     } catch (error) {
-      setMessageLoadStates((current) => ({ ...current, [conversationId]: "failed" }));
-      setNotice(extractErrorMessage(error, t.requestFailed));
+      const hasCachedMessages = Boolean(messagesByConversationRef.current[conversationId]?.length);
+      setMessageLoadStates((current) => ({ ...current, [conversationId]: hasCachedMessages ? "ready" : "failed" }));
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setIsConnected(false);
+        setConnectionState("offline");
+      } else {
+        setNotice(extractErrorMessage(error, t.requestFailed));
+      }
     }
   }
 
@@ -10144,11 +10222,16 @@ export function ChatPrototype() {
 
   function logout() {
     endActiveCall(false);
+    const signedOutUserId = currentUser?.id;
     clearStoredAuth();
+    if (signedOutUserId) void clearOfflineWorkspace(signedOutUserId);
     socketRef.current?.disconnect();
     socketRef.current = null;
     setAccessToken("");
     setCurrentUser(null);
+    setConversations([]);
+    setMessagesByConversation({});
+    setOfflineCacheReadyUserId("");
     setIsConnected(false);
     setConnectionState("offline");
   }
@@ -10915,6 +10998,17 @@ export function ChatPrototype() {
           </button>
         </div>
       </div>
+    );
+  }
+  if (sessionRestorePending) {
+    return (
+      <main className="grid min-h-[100dvh] place-items-center bg-[linear-gradient(135deg,#f7fbfb,#e8f2f4_54%,#f8f6ee)] px-6 py-[max(1.5rem,env(safe-area-inset-top,0px))] text-ink">
+        <div className="flex flex-col items-center text-center">
+          <img className="h-24 w-24 rounded-[28px] bg-white object-contain p-3 shadow-xl" src="/icons/icon-192.png" alt="Glimpse Chat" />
+          <h1 className="mt-5 text-2xl font-semibold">Glimpse Chat</h1>
+          <p className="mt-2 text-sm text-slate-500">{uiLabel(uiLanguage, { zh: "正在恢复聊天…", en: "Restoring your chats…", hi: "आपकी चैट बहाल की जा रही हैं…" })}</p>
+        </div>
+      </main>
     );
   }
   if (!currentUser) {

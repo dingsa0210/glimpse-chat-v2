@@ -1,7 +1,7 @@
 {
   "id": "/",
   "name": "Glimpse Chat",
-  "short_name": "Glimpse",
+  "short_name": "Glimpse Chat",
   "description": "Cross-border chat with Chinese and English translation.",
   "lang": "zh-CN",
   "dir": "ltr",

@@ -1,6 +1,8 @@
-const CACHE_VERSION = "glimpse-pwa-v1";
+const CACHE_VERSION = "glimpse-pwa-v2";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
+const APP_SHELL_URL = "/";
 const PRECACHE_URLS = [
+  APP_SHELL_URL,
   "/offline",
   "/manifest.json",
   "/icons/icon-192.png",
@@ -9,12 +11,24 @@ const PRECACHE_URLS = [
   "/icons/icon-maskable-512.png"
 ];
 
+async function cacheAppShell() {
+  const cache = await caches.open(STATIC_CACHE);
+  await Promise.all(PRECACHE_URLS.map((url) => cache.add(url).catch(() => undefined)));
+  try {
+    const response = await fetch(APP_SHELL_URL, { cache: "no-store" });
+    if (!response.ok) return;
+    await cache.put(APP_SHELL_URL, response.clone());
+    const html = await response.text();
+    const assetUrls = Array.from(html.matchAll(/(?:src|href)="([^"]+)"/g), (match) => match[1])
+      .filter((url) => url && url.startsWith("/_next/static/"));
+    await Promise.all(Array.from(new Set(assetUrls)).map((url) => cache.add(url).catch(() => undefined)));
+  } catch {
+    // A later online navigation will refresh the shell cache.
+  }
+}
+
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(STATIC_CACHE).then((cache) =>
-      Promise.all(PRECACHE_URLS.map((url) => cache.add(url).catch(() => undefined)))
-    ).then(() => self.skipWaiting())
-  );
+  event.waitUntil(cacheAppShell().then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
@@ -26,10 +40,17 @@ self.addEventListener("activate", (event) => {
 });
 
 async function networkNavigation(request) {
+  const cache = await caches.open(STATIC_CACHE);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3500);
   try {
-    return await fetch(request);
+    const response = await fetch(request, { signal: controller.signal });
+    if (response.ok) await cache.put(APP_SHELL_URL, response.clone());
+    return response;
   } catch {
-    return (await caches.match("/offline")) || Response.error();
+    return (await cache.match(APP_SHELL_URL)) || (await cache.match("/offline")) || Response.error();
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
