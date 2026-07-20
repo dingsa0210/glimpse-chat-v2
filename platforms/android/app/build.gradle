@@ -72,7 +72,7 @@ android {
         resValue "string", "launchUrl", launchUrl
 
 
-            resValue "string", "launchHandlerClientMode", 'focus-existing'
+            resValue "string", "launchHandlerClientMode", 'navigate-existing'
 
 
 

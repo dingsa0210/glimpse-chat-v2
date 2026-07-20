@@ -37,5 +37,5 @@
   "fingerprints": [],
   "additionalTrustedOrigins": [],
   "retainedBundles": [],
-  "launchHandlerClientMode": "focus-existing"
+  "launchHandlerClientMode": "navigate-existing"
 }
