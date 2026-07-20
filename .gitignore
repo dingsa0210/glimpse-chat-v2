@@ -22,3 +22,6 @@ generated-images/
 platforms/android/app-release-*.apk
 platforms/android/app-release-*.aab
 platforms/windows/package-output/
+release-artifacts/
+platforms/windows-exe/node_modules/
+platforms/windows-exe/dist/
