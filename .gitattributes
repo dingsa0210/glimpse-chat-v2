@@ -1,0 +1,4 @@
+# Bubblewrap hashes this file byte-for-byte. Keep it stable across Windows and Linux.
+platforms/android/twa-manifest.json text eol=lf
+platforms/android/manifest-checksum.txt text eol=lf
+platforms/android/gradlew text eol=lf
