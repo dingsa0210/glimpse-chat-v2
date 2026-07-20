@@ -16,6 +16,7 @@ import { RICH_STICKERS, STICKER_CATEGORIES } from "./sticker-library";
 
 type Tab = "chats" | "contacts" | "meetings" | "moments" | "me";
 type MobilePane = "list" | "chat";
+type PersistedWorkspaceView = { tab: Tab; conversationId: string; mobilePane: MobilePane };
 type UiLanguage = "zh" | "en" | "hi";
 type MessageSendStatus = "sending" | "sent" | "delivered" | "read" | "failed";
 type ConnectionState = "connected" | "reconnecting" | "offline";
@@ -1539,6 +1540,30 @@ function avatarPreviewStorageKey(userId: string) {
 
 function conversationPinsStorageKey(userId: string) {
   return `glimpse.conversationPins.${userId}`;
+}
+
+function workspaceViewStorageKey(userId: string) {
+  return `glimpse.workspaceView.${userId}`;
+}
+
+function readWorkspaceView(userId: string): PersistedWorkspaceView | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(workspaceViewStorageKey(userId)) ?? "null") as Partial<PersistedWorkspaceView> | null;
+    if (!parsed) return null;
+    const validTabs: Tab[] = ["chats", "contacts", "meetings", "moments", "me"];
+    const tab = validTabs.includes(parsed.tab as Tab) ? parsed.tab as Tab : "chats";
+    const conversationId = typeof parsed.conversationId === "string" ? parsed.conversationId : "";
+    const mobilePane = parsed.mobilePane === "chat" ? "chat" : "list";
+    return { tab, conversationId, mobilePane };
+  } catch {
+    return null;
+  }
+}
+
+function writeWorkspaceView(userId: string, view: PersistedWorkspaceView) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(workspaceViewStorageKey(userId), JSON.stringify(view));
 }
 
 function messageRemindersStorageKey(userId: string) {
@@ -3444,8 +3469,37 @@ export function ChatPrototype() {
   const selectedIdRef = useRef(selectedId);
   const mobilePaneRef = useRef(mobilePane);
   const tabRef = useRef(tab);
+  const [workspaceViewReadyUserId, setWorkspaceViewReadyUserId] = useState("");
   const pendingQuoteJumpRef = useRef<string | null>(null);
   const groupMembersRequestRef = useRef(0);
+
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId) {
+      setWorkspaceViewReadyUserId("");
+      return;
+    }
+
+    const hasConversationShortcut = Boolean(new URLSearchParams(window.location.search).get("conversation")?.trim());
+    const savedView = hasConversationShortcut ? null : readWorkspaceView(userId);
+    if (savedView) {
+      tabRef.current = savedView.tab;
+      mobilePaneRef.current = savedView.mobilePane;
+      setTab(savedView.tab);
+      setMobilePane(savedView.mobilePane);
+      if (savedView.conversationId) {
+        selectedIdRef.current = savedView.conversationId;
+        setSelectedId(savedView.conversationId);
+      }
+    }
+    setWorkspaceViewReadyUserId(userId);
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId || workspaceViewReadyUserId !== userId || pendingShortcutConversationId) return;
+    writeWorkspaceView(userId, { tab, conversationId: selectedId, mobilePane });
+  }, [currentUser?.id, mobilePane, pendingShortcutConversationId, selectedId, tab, workspaceViewReadyUserId]);
 
   useEffect(() => {
     if (!notice) return;
