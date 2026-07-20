@@ -2966,6 +2966,42 @@ function isValidEmailAddress(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
+function OverflowMarqueeText({ text, className = "" }: { text: string; className?: string }) {
+  const viewportRef = useRef<HTMLSpanElement | null>(null);
+  const contentRef = useRef<HTMLSpanElement | null>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useEffect(() => {
+    const measure = () => {
+      const viewport = viewportRef.current;
+      const content = contentRef.current;
+      if (!viewport || !content) return;
+      setOverflowing(content.scrollWidth > viewport.clientWidth + 1);
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (viewportRef.current) observer?.observe(viewportRef.current);
+    if (contentRef.current) observer?.observe(contentRef.current);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [text]);
+
+  const durationSeconds = Math.max(10, Math.min(24, text.length * 0.28));
+  return (
+    <span ref={viewportRef} className={`block min-w-0 overflow-hidden ${className}`} data-overflow-marquee={overflowing ? "active" : "inactive"} title={text}>
+      {overflowing ? (
+        <span className="glimpse-continuous-marquee inline-flex w-max whitespace-nowrap" style={{ animationDuration: `${durationSeconds}s` }}>
+          <span ref={contentRef} className="shrink-0 pr-8">{text}</span>
+          <span aria-hidden="true" className="shrink-0 pr-8">{text}</span>
+        </span>
+      ) : <span ref={contentRef} className="block whitespace-nowrap">{text}</span>}
+    </span>
+  );
+}
+
 const detailModalCardClass = "mx-auto mt-4 flex h-[min(92vh,800px)] max-h-[92vh] w-full flex-col overflow-hidden rounded-[28px] border border-white/80 bg-white/95 p-4 shadow-2xl backdrop-blur-xl";
 const detailHeaderClass = "flex shrink-0 items-center justify-between gap-3 border-b border-line pb-3";
 const detailHeroClass = "mt-4 flex items-center gap-3 rounded-3xl border border-line bg-white/80 p-3 shadow-sm";
@@ -10995,7 +11031,7 @@ export function ChatPrototype() {
   return (
     <main className="h-[100dvh] overflow-hidden bg-[linear-gradient(135deg,#f7fbfb,#e8f2f4_54%,#f8f6ee)] p-0 text-ink lg:p-7">
       <GlimpseAssistant open={assistantOpen} onClose={() => setAssistantOpen(false)} apiUrl={getApiUrl()} accessToken={accessToken} userId={currentUser.id} uiLanguage={uiLanguage} onSendGeneratedFile={sendAssistantGeneratedFile} />
-      <style>{`@keyframes glimpse-group-announcement-marquee { 0% { transform: translateX(100%); } 100% { transform: translateX(-100%); } } @keyframes glimpse-panel-enter { from { opacity: 0; transform: translateY(12px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } } .glimpse-inner-panel { animation: glimpse-panel-enter .28s cubic-bezier(.2,.8,.2,1); }`}</style>
+      <style>{`@keyframes glimpse-group-announcement-marquee { 0% { transform: translateX(100%); } 100% { transform: translateX(-100%); } } @keyframes glimpse-continuous-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } } .glimpse-continuous-marquee { animation-name: glimpse-continuous-marquee; animation-timing-function: linear; animation-iteration-count: infinite; will-change: transform; } @media (prefers-reduced-motion: reduce) { .glimpse-continuous-marquee { animation: none !important; } } @keyframes glimpse-panel-enter { from { opacity: 0; transform: translateY(12px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } } .glimpse-inner-panel { animation: glimpse-panel-enter .28s cubic-bezier(.2,.8,.2,1); }`}</style>
       <div className="mx-auto flex h-full min-h-0 w-full max-w-[1440px] flex-col overflow-hidden border border-white/80 bg-white/60 shadow-[0_28px_90px_rgba(22,54,65,0.18)] backdrop-blur-xl lg:h-[calc(100dvh-3.5rem)] lg:rounded-[30px] lg:flex-row">
         <aside className={`${mobilePane === "chat" ? "hidden lg:flex" : "flex"} ${adminModalOpen ? "relative z-[80]" : ""} max-h-[100dvh] w-full shrink-0 flex-col overflow-hidden border-b border-white/50 bg-white/80 backdrop-blur-xl lg:max-h-none lg:min-h-0 lg:w-[390px] lg:border-b-0 lg:border-r lg:border-white/60`}>
           <header className="flex min-h-[76px] items-center gap-3 border-b border-white/70 bg-white/70 px-4 backdrop-blur-xl">
@@ -11974,7 +12010,7 @@ export function ChatPrototype() {
                   <span className="truncate text-lg font-semibold text-ink">{displayConversationName(selected)}</span>
                   {selected.type === "group" ? <span aria-label={connectionStatusLabels[uiLanguage][connectionState]} className={`h-2.5 w-2.5 shrink-0 rounded-full ${connectionState === "connected" ? "bg-emerald-500" : connectionState === "offline" ? "bg-coral" : "bg-amber-400"}`} title={connectionStatusLabels[uiLanguage][connectionState]} /> : null}
                 </span>
-                <span className="block truncate text-sm text-slate-500" title={chatHeaderSubtitle}>{chatHeaderSubtitle}</span>
+                {selected.type === "group" ? <OverflowMarqueeText className="text-sm text-slate-500" text={chatHeaderSubtitle} /> : <span className="block truncate text-sm text-slate-500" title={chatHeaderSubtitle}>{chatHeaderSubtitle}</span>}
               </span>
             </button>
           </header>
