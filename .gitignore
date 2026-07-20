@@ -5,8 +5,20 @@
 node_modules/
 **/dist/
 **/.next/
+*.tsbuildinfo
 
 # 本地数据
 generated-images/
 .local
 *.log
+~$*.docx
+
+# PWA / native packaging output and signing material
+**/.gradle/
+**/build/
+**/local.properties
+*.jks
+*.keystore
+platforms/android/app-release-*.apk
+platforms/android/app-release-*.aab
+platforms/windows/package-output/

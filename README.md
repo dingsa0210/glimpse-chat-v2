@@ -71,3 +71,7 @@ After Docker Desktop is running, start infrastructure plus Prisma-mode API and W
 ```
 
 Use `-SkipInfraCheck` when Docker compose services are already running and you only need to start API/Web.
+
+## PWA / Android / Windows
+
+Glimpse Chat 可作为 PWA 安装，并提供 Android Trusted Web Activity 与 Windows PWABuilder/MSIX 发布配置。完整说明见 [`docs/PWA_NATIVE_RELEASE.md`](docs/PWA_NATIVE_RELEASE.md)。
