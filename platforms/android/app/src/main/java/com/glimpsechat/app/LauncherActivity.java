@@ -47,8 +47,11 @@ public class LauncherActivity
         // Get the original launch Url.
         Uri uri = super.getLaunchingUrl();
 
-
-
-        return uri;
+        // Give every launcher activation its own navigation URL. Some Android browsers keep
+        // the previous TWA task after an in-page sign-out and can otherwise leave the native
+        // splash screen over that stale task until the process is killed.
+        return uri.buildUpon()
+                .appendQueryParameter("launchId", Long.toString(System.currentTimeMillis()))
+                .build();
     }
 }

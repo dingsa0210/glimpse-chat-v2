@@ -13,7 +13,7 @@
   "navigationDividerColorDark": "#18312f",
   "backgroundColor": "#f7f7f2",
   "enableNotifications": true,
-  "startUrl": "/?source=android-twa",
+  "startUrl": "/?source=android-twa&appVersion=1.0.3&versionCode=4",
   "iconUrl": "https://glimpsechat.com/icons/icon-512.png",
   "maskableIconUrl": "https://glimpsechat.com/icons/icon-maskable-512.png",
   "splashScreenFadeOutDuration": 300,
@@ -37,5 +37,5 @@
   "fingerprints": [],
   "additionalTrustedOrigins": [],
   "retainedBundles": [],
-  "launchHandlerClientMode": "navigate-existing"
+  "launchHandlerClientMode": "navigate-new"
 }

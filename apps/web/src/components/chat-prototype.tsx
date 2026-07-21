@@ -10220,11 +10220,11 @@ export function ChatPrototype() {
     }
   }
 
-  function logout() {
+  async function logout() {
     endActiveCall(false);
     const signedOutUserId = currentUser?.id;
     clearStoredAuth();
-    if (signedOutUserId) void clearOfflineWorkspace(signedOutUserId);
+    if (signedOutUserId) await clearOfflineWorkspace(signedOutUserId);
     socketRef.current?.disconnect();
     socketRef.current = null;
     setAccessToken("");
@@ -10234,6 +10234,15 @@ export function ChatPrototype() {
     setOfflineCacheReadyUserId("");
     setIsConnected(false);
     setConnectionState("offline");
+
+    // Start from a clean document after signing out. Android TWA providers can otherwise
+    // retain the signed-out React document and leave their splash screen over a stale task.
+    const currentUrl = new URL(window.location.href);
+    const source = currentUrl.searchParams.get("source");
+    const loginUrl = new URL("/", window.location.origin);
+    if (source) loginUrl.searchParams.set("source", source);
+    loginUrl.searchParams.set("signedOut", Date.now().toString());
+    window.location.replace(loginUrl);
   }
 
 
