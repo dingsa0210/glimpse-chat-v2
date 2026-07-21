@@ -3051,6 +3051,19 @@ const profilePageCardClass = "rounded-3xl border border-white/80 bg-white/90 p-4
 const profilePageSectionClass = "rounded-2xl border border-line bg-white/80 p-3 shadow-sm";
 
 export function ChatPrototype() {
+  useEffect(() => {
+    const source = new URLSearchParams(window.location.search).get("source");
+    const isAndroidApp = source === "android-twa" || source === "android-apk";
+    const root = document.documentElement;
+
+    if (isAndroidApp) root.dataset.glimpseClient = "android-app";
+    else delete root.dataset.glimpseClient;
+
+    return () => {
+      if (root.dataset.glimpseClient === "android-app") delete root.dataset.glimpseClient;
+    };
+  }, []);
+
   const [tab, setTab] = useState<Tab>("chats");
   const [mobilePane, setMobilePane] = useState<MobilePane>("list");
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>(() => getStoredUiLanguage());
@@ -11303,7 +11316,7 @@ export function ChatPrototype() {
             <TabButton active={tab === "moments"} onClick={() => { setSettingsOpen(false); setGlobalQuery(""); setTab("moments"); }} icon={<Globe2 size={17} />} label={uiLabel(uiLanguage, { zh: "朋友圈", en: "Moments", hi: "मोमेंट्स" })} />
             <TabButton active={tab === "me"} onClick={() => { setSettingsOpen(false); setGlobalQuery(""); setTab("me"); }} icon={<Users size={17} />} label={t.me} />
           </nav>
-          <section className="min-h-0 flex-1 overflow-auto bg-white/40 px-3 py-3">
+          <section className="glimpse-sidebar-scroll min-h-0 flex-1 overflow-auto bg-white/40 px-3 py-3">
             {notice && (tab !== "me" || !profileNotice) ? <div className="glimpse-notice-fade border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800" role="status">{localizeNoticeMessage(notice, uiLanguage)}</div> : null}
             {globalSearchActive ? (
               <div className="space-y-3">

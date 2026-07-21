@@ -28,6 +28,16 @@ body {
     sans-serif;
 }
 
+/*
+ * Android TWA/WebView shells can report a viewport that includes the gesture
+ * navigation area. Keep the extra scroll room scoped to APK launch URLs so the
+ * regular browser and desktop layouts retain their existing spacing.
+ */
+html[data-glimpse-client="android-app"] .glimpse-sidebar-scroll {
+  padding-bottom: max(2rem, env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: max(2rem, env(safe-area-inset-bottom, 0px));
+}
+
 button,
 input,
 textarea {
