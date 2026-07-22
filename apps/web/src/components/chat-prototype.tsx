@@ -18,6 +18,38 @@ import { RICH_STICKERS, STICKER_CATEGORIES } from "./sticker-library";
 type Tab = "chats" | "contacts" | "meetings" | "moments" | "me";
 type MobilePane = "list" | "chat";
 type PersistedWorkspaceView = { tab: Tab; conversationId: string; mobilePane: MobilePane };
+type AndroidNavigationView =
+  | "main"
+  | "search"
+  | "settings"
+  | "welcome"
+  | "assistant"
+  | "admin"
+  | "contact-details"
+  | "group-create"
+  | "group-details"
+  | "group-call"
+  | "favorites"
+  | "media-library"
+  | "media-preview"
+  | "document-preview"
+  | "archive-preview"
+  | "screenshot-editor"
+  | "location"
+  | "avatar-crop"
+  | "forward"
+  | "voice-preview"
+  | "composer-menu"
+  | "sticker-panel";
+type AndroidNavigationSnapshot = {
+  version: 1;
+  userId: string;
+  tab: Tab;
+  mobilePane: MobilePane;
+  conversationId: string;
+  globalQuery: string;
+  view: AndroidNavigationView;
+};
 type UiLanguage = "zh" | "en" | "hi";
 type MessageSendStatus = "sending" | "sent" | "delivered" | "read" | "failed";
 type ConnectionState = "connected" | "reconnecting" | "offline";
@@ -35,6 +67,47 @@ const STARRED_CONTACT_TAG = "__glimpse_starred__";
 type DocumentTranslationReply = { answer: string; model: string; fileName: string | null; generatedFile?: UploadedMediaResponse };
 type DocumentTranslationViewMode = "original" | "translated" | "bilingual";
 type GalleryMediaPreview = MediaPreview & { gallery?: MessagePayload[]; galleryIndex?: number };
+const ANDROID_NAVIGATION_STATE_KEY = "__glimpseAndroidNavigation";
+const ANDROID_NAVIGATION_VIEWS = new Set<AndroidNavigationView>([
+  "main", "search", "settings", "welcome", "assistant", "admin", "contact-details", "group-create", "group-details", "group-call",
+  "favorites", "media-library", "media-preview", "document-preview", "archive-preview", "screenshot-editor", "location", "avatar-crop",
+  "forward", "voice-preview", "composer-menu", "sticker-panel"
+]);
+
+function isAndroidAppRequest() {
+  if (typeof window === "undefined") return false;
+  const source = new URLSearchParams(window.location.search).get("source");
+  return source === "android-twa" || source === "android-apk";
+}
+
+function readAndroidNavigationSnapshot(state: unknown): AndroidNavigationSnapshot | null {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return null;
+  const candidate = (state as Record<string, unknown>)[ANDROID_NAVIGATION_STATE_KEY];
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Partial<AndroidNavigationSnapshot>;
+  if (
+    value.version !== 1
+    || typeof value.userId !== "string"
+    || !["chats", "contacts", "meetings", "moments", "me"].includes(value.tab ?? "")
+    || !["list", "chat"].includes(value.mobilePane ?? "")
+    || typeof value.conversationId !== "string"
+    || typeof value.globalQuery !== "string"
+    || !ANDROID_NAVIGATION_VIEWS.has(value.view as AndroidNavigationView)
+  ) return null;
+  return value as AndroidNavigationSnapshot;
+}
+
+function androidNavigationState(snapshot: AndroidNavigationSnapshot) {
+  const currentState = window.history.state;
+  const base = currentState && typeof currentState === "object" && !Array.isArray(currentState)
+    ? currentState as Record<string, unknown>
+    : {};
+  return { ...base, [ANDROID_NAVIGATION_STATE_KEY]: snapshot };
+}
+
+function androidNavigationKey(snapshot: AndroidNavigationSnapshot) {
+  return JSON.stringify(snapshot);
+}
 type ScreenshotTool = 'select' | 'pen' | 'highlight' | 'mosaic' | 'rectangle' | 'ellipse' | 'arrow' | 'text';
 type ScreenshotPenType = 'round' | 'square' | 'dashed';
 type ScreenshotPoint = { x: number; y: number };
@@ -3052,8 +3125,7 @@ const profilePageSectionClass = "rounded-2xl border border-line bg-white/80 p-3 
 
 export function ChatPrototype() {
   useEffect(() => {
-    const source = new URLSearchParams(window.location.search).get("source");
-    const isAndroidApp = source === "android-twa" || source === "android-apk";
+    const isAndroidApp = isAndroidAppRequest();
     const root = document.documentElement;
 
     if (isAndroidApp) root.dataset.glimpseClient = "android-app";
@@ -3497,8 +3569,44 @@ export function ChatPrototype() {
   const mobilePaneRef = useRef(mobilePane);
   const tabRef = useRef(tab);
   const [workspaceViewReadyUserId, setWorkspaceViewReadyUserId] = useState("");
+  const androidNavigationReadyUserIdRef = useRef("");
+  const androidNavigationApplyingRef = useRef(false);
   const pendingQuoteJumpRef = useRef<string | null>(null);
   const groupMembersRequestRef = useRef(0);
+
+  const androidNavigationView: AndroidNavigationView = adminModalOpen ? "admin"
+    : screenshotEditorOpen ? "screenshot-editor"
+      : previewMedia ? "media-preview"
+        : documentPreview && !documentPreviewMinimized ? "document-preview"
+          : archivePreview ? "archive-preview"
+            : mediaLibraryOpen ? "media-library"
+              : favoritesOpen ? "favorites"
+                : groupDetailsOpen ? "group-details"
+                  : contactDetailsUser ? "contact-details"
+                    : groupModalOpen ? "group-create"
+                      : groupCallPicker ? "group-call"
+                        : assistantOpen ? "assistant"
+                          : locationModalOpen ? "location"
+                            : avatarCropSource ? "avatar-crop"
+                              : forwardMessages.length > 0 ? "forward"
+                                : pendingVoicePreview ? "voice-preview"
+                                  : welcomeOpen && !welcomeDismissed ? "welcome"
+                                    : settingsOpen ? "settings"
+                                      : stickerPanelOpen ? "sticker-panel"
+                                        : composerMenuOpen ? "composer-menu"
+                                          : globalQuery.trim() ? "search"
+                                            : "main";
+  const androidNavigationSnapshot: AndroidNavigationSnapshot = {
+    version: 1,
+    userId: currentUser?.id ?? "",
+    tab,
+    mobilePane,
+    conversationId: tab === "chats" && mobilePane === "chat" ? selectedId : "",
+    globalQuery,
+    view: androidNavigationView
+  };
+  const androidNavigationSnapshotRef = useRef(androidNavigationSnapshot);
+  androidNavigationSnapshotRef.current = androidNavigationSnapshot;
 
   useEffect(() => {
     const userId = currentUser?.id;
@@ -3527,6 +3635,108 @@ export function ChatPrototype() {
     if (!userId || workspaceViewReadyUserId !== userId || pendingShortcutConversationId) return;
     writeWorkspaceView(userId, { tab, conversationId: selectedId, mobilePane });
   }, [currentUser?.id, mobilePane, pendingShortcutConversationId, selectedId, tab, workspaceViewReadyUserId]);
+
+  useEffect(() => {
+    const userId = currentUser?.id ?? "";
+    if (!isAndroidAppRequest() || !userId || workspaceViewReadyUserId !== userId) {
+      androidNavigationReadyUserIdRef.current = "";
+      androidNavigationApplyingRef.current = false;
+      return;
+    }
+
+    const applySnapshot = (snapshot: AndroidNavigationSnapshot) => {
+      tabRef.current = snapshot.tab;
+      mobilePaneRef.current = snapshot.mobilePane;
+      setTab(snapshot.tab);
+      setMobilePane(snapshot.mobilePane);
+      if (snapshot.conversationId) {
+        selectedIdRef.current = snapshot.conversationId;
+        setSelectedId(snapshot.conversationId);
+      }
+      setGlobalQuery(snapshot.globalQuery);
+      setSettingsOpen(snapshot.view === "settings");
+      setAssistantOpen(snapshot.view === "assistant");
+      setAdminModalOpen(snapshot.view === "admin");
+      setGroupModalOpen(snapshot.view === "group-create");
+      setGroupDetailsOpen(snapshot.view === "group-details");
+      setFavoritesOpen(snapshot.view === "favorites");
+      setMediaLibraryOpen(snapshot.view === "media-library");
+      setScreenshotEditorOpen(snapshot.view === "screenshot-editor");
+      setLocationModalOpen(snapshot.view === "location");
+      setComposerMenuOpen(snapshot.view === "composer-menu");
+      setStickerPanelOpen(snapshot.view === "sticker-panel");
+      if (snapshot.view === "welcome") {
+        setWelcomeOpen(true);
+        setWelcomeDismissed(false);
+      } else {
+        setWelcomeOpen(false);
+        setWelcomeDismissed(true);
+      }
+      if (snapshot.view !== "contact-details") setContactDetailsUser(null);
+      if (snapshot.view !== "group-call") setGroupCallPicker(null);
+      if (snapshot.view !== "media-preview") setPreviewMedia(null);
+      if (snapshot.view !== "document-preview") setDocumentPreview(null);
+      if (snapshot.view !== "archive-preview") setArchivePreview(null);
+      if (snapshot.view !== "avatar-crop") setAvatarCropSource("");
+      if (snapshot.view !== "forward") setForwardMessages([]);
+      if (snapshot.view !== "voice-preview") setPendingVoicePreview(null);
+    };
+
+    const handleAndroidPopState = (event: PopStateEvent) => {
+      const snapshot = readAndroidNavigationSnapshot(event.state);
+      if (!snapshot || snapshot.userId !== userId) return;
+      androidNavigationApplyingRef.current = true;
+      applySnapshot(snapshot);
+      window.setTimeout(() => {
+        androidNavigationApplyingRef.current = false;
+      }, 0);
+    };
+
+    window.addEventListener("popstate", handleAndroidPopState);
+    if (androidNavigationReadyUserIdRef.current !== userId) {
+      const initialSnapshot = androidNavigationSnapshotRef.current;
+      const homeSnapshot: AndroidNavigationSnapshot = {
+        version: 1,
+        userId,
+        tab: "chats",
+        mobilePane: "list",
+        conversationId: "",
+        globalQuery: "",
+        view: "main"
+      };
+      window.history.replaceState(androidNavigationState(homeSnapshot), "", window.location.href);
+      if (androidNavigationKey(initialSnapshot) !== androidNavigationKey(homeSnapshot)) {
+        window.history.pushState(androidNavigationState(initialSnapshot), "", window.location.href);
+      }
+      androidNavigationReadyUserIdRef.current = userId;
+    }
+
+    return () => window.removeEventListener("popstate", handleAndroidPopState);
+  }, [currentUser?.id, workspaceViewReadyUserId]);
+
+  useEffect(() => {
+    const userId = currentUser?.id ?? "";
+    if (!isAndroidAppRequest() || !userId || workspaceViewReadyUserId !== userId || androidNavigationReadyUserIdRef.current !== userId) return;
+    const nextSnapshot = androidNavigationSnapshotRef.current;
+    const currentSnapshot = readAndroidNavigationSnapshot(window.history.state);
+    const currentKey = currentSnapshot ? androidNavigationKey(currentSnapshot) : "";
+    const nextKey = androidNavigationKey(nextSnapshot);
+    if (androidNavigationApplyingRef.current) {
+      androidNavigationApplyingRef.current = false;
+      if (currentKey !== nextKey) window.history.replaceState(androidNavigationState(nextSnapshot), "", window.location.href);
+      return;
+    }
+    if (currentKey === nextKey) return;
+    window.history.pushState(androidNavigationState(nextSnapshot), "", window.location.href);
+  }, [
+    androidNavigationView,
+    currentUser?.id,
+    globalQuery,
+    mobilePane,
+    selectedId,
+    tab,
+    workspaceViewReadyUserId
+  ]);
 
   useEffect(() => {
     if (!notice) return;
@@ -5746,6 +5956,22 @@ export function ChatPrototype() {
     setWelcomeOpen(true);
     setWelcomeDismissed(false);
     setMobilePane("chat");
+  }
+
+  function returnFromCurrentAndroidView(fallback: () => void) {
+    const snapshot = isAndroidAppRequest() ? readAndroidNavigationSnapshot(window.history.state) : null;
+    const userId = currentUser?.id;
+    if (snapshot && userId && snapshot.userId === userId && androidNavigationReadyUserIdRef.current === userId) {
+      const isHome = snapshot.tab === "chats"
+        && snapshot.mobilePane === "list"
+        && snapshot.view === "main"
+        && !snapshot.globalQuery;
+      if (!isHome) {
+        window.history.back();
+        return;
+      }
+    }
+    fallback();
   }
 
   function handleTitleClick() {
@@ -11200,7 +11426,7 @@ export function ChatPrototype() {
   const selectedScreenshotTextBounds = selectedScreenshotTextAnnotation ? screenshotTextBounds(selectedScreenshotTextAnnotation) : null;
   return (
     <main className="h-[100dvh] overflow-hidden bg-[linear-gradient(135deg,#f7fbfb,#e8f2f4_54%,#f8f6ee)] p-0 pt-[env(safe-area-inset-top,0px)] text-ink lg:p-7">
-      <GlimpseAssistant open={assistantOpen} onClose={() => setAssistantOpen(false)} apiUrl={getApiUrl()} accessToken={accessToken} userId={currentUser.id} uiLanguage={uiLanguage} onSendGeneratedFile={sendAssistantGeneratedFile} />
+      <GlimpseAssistant open={assistantOpen} onClose={() => returnFromCurrentAndroidView(() => setAssistantOpen(false))} apiUrl={getApiUrl()} accessToken={accessToken} userId={currentUser.id} uiLanguage={uiLanguage} onSendGeneratedFile={sendAssistantGeneratedFile} />
       <style>{`@keyframes glimpse-group-announcement-marquee { 0% { transform: translateX(100%); } 100% { transform: translateX(-100%); } } @keyframes glimpse-continuous-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } } .glimpse-continuous-marquee { animation-name: glimpse-continuous-marquee; animation-timing-function: linear; animation-iteration-count: infinite; will-change: transform; } @media (prefers-reduced-motion: reduce) { .glimpse-continuous-marquee { animation: none !important; } } @keyframes glimpse-panel-enter { from { opacity: 0; transform: translateY(12px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } } .glimpse-inner-panel { animation: glimpse-panel-enter .28s cubic-bezier(.2,.8,.2,1); }`}</style>
       <div className="mx-auto flex h-full min-h-0 w-full max-w-[1440px] flex-col overflow-hidden border border-white/80 bg-white/60 shadow-[0_28px_90px_rgba(22,54,65,0.18)] backdrop-blur-xl lg:h-[calc(100dvh-3.5rem)] lg:rounded-[30px] lg:flex-row">
         <aside className={`${mobilePane === "chat" ? "hidden lg:flex" : "flex"} ${adminModalOpen ? "relative z-[80]" : ""} max-h-[100dvh] w-full shrink-0 flex-col overflow-hidden border-b border-white/50 bg-white/80 backdrop-blur-xl lg:max-h-none lg:min-h-0 lg:w-[390px] lg:border-b-0 lg:border-r lg:border-white/60`}>
@@ -11213,7 +11439,7 @@ export function ChatPrototype() {
               <button aria-label="Switch language" className="grid h-11 w-11 place-items-center rounded-2xl border border-line bg-white text-ink shadow-sm transition hover:-translate-y-0.5 hover:border-brand hover:text-brand" onClick={() => setUiLanguage((value) => nextUiLanguage(value))} title="Switch language">
                 <Languages size={18} />
               </button>
-              <button aria-label={t.settings} className="grid h-11 w-11 place-items-center rounded-2xl border border-line bg-white text-ink shadow-sm transition hover:-translate-y-0.5 hover:border-brand hover:text-brand" onClick={() => setSettingsOpen((value) => !value)} title={t.settings}>
+              <button aria-label={t.settings} className="grid h-11 w-11 place-items-center rounded-2xl border border-line bg-white text-ink shadow-sm transition hover:-translate-y-0.5 hover:border-brand hover:text-brand" onClick={() => settingsOpen ? returnFromCurrentAndroidView(() => setSettingsOpen(false)) : setSettingsOpen(true)} title={t.settings}>
                 <Settings size={18} />
               </button>
             </div>
@@ -12109,7 +12335,7 @@ export function ChatPrototype() {
           <section className={`${mobilePane === "list" ? "hidden lg:flex" : "flex"} min-h-0 flex-1 flex-col overflow-auto bg-[linear-gradient(180deg,rgba(238,247,248,0.72),rgba(255,255,255,0.88))]`}>
             <header className="flex min-h-[76px] shrink-0 items-center justify-between gap-3 border-b border-white/70 bg-white/75 px-4 backdrop-blur-xl">
               <div className="flex min-w-0 items-center gap-3">
-                <button aria-label={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-line bg-white text-ink shadow-sm hover:border-brand lg:hidden" onClick={() => setMobilePane("list")} title={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} type="button">
+                <button aria-label={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-line bg-white text-ink shadow-sm hover:border-brand lg:hidden" onClick={() => returnFromCurrentAndroidView(() => setMobilePane("list"))} title={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} type="button">
                   <ArrowLeft size={18} />
                 </button>
                 <Avatar name={currentUser?.nickname ?? "Me"} url={profileAvatarPreviewUrl || profileAvatarUrl || currentUser?.avatarUrl} />
@@ -12122,7 +12348,7 @@ export function ChatPrototype() {
               </div>
               <div className="flex gap-2">
                 <button className="grid h-10 w-10 place-items-center rounded border border-line text-ink hover:border-brand" onClick={() => { setFavoritesSendMode(true); setFavoritesOpen(true); void loadFavorites(); }} type="button" aria-label={uiLabel(uiLanguage, { zh: "收藏", en: "Favorites", hi: "पसंदीदा" })} title={uiLabel(uiLanguage, { zh: "收藏", en: "Favorites", hi: "पसंदीदा" })}><Star size={18} /></button>
-                <button className="grid h-10 w-10 place-items-center rounded border border-line text-ink hover:border-brand" onClick={() => setWelcomeDismissed(true)} type="button" aria-label={uiLabel(uiLanguage, { zh: "进入聊天", en: "Enter chats", hi: "चैट में जाएं" })} title={uiLabel(uiLanguage, { zh: "进入聊天", en: "Enter chats", hi: "चैट में जाएं" })}><MessageCircle size={18} /></button>
+                <button className="grid h-10 w-10 place-items-center rounded border border-line text-ink hover:border-brand" onClick={() => returnFromCurrentAndroidView(() => setWelcomeDismissed(true))} type="button" aria-label={uiLabel(uiLanguage, { zh: "进入聊天", en: "Enter chats", hi: "चैट में जाएं" })} title={uiLabel(uiLanguage, { zh: "进入聊天", en: "Enter chats", hi: "चैट में जाएं" })}><MessageCircle size={18} /></button>
               </div>
             </header>
             <div className="grid min-h-0 flex-1 gap-8 px-5 py-8 lg:grid-cols-[minmax(0,1fr)_420px] lg:px-8 lg:py-10 xl:px-12">
@@ -12170,7 +12396,7 @@ export function ChatPrototype() {
         <section className={`${mobilePane === "list" ? "hidden lg:flex" : "flex"} min-h-0 flex-1 flex-col bg-[linear-gradient(180deg,rgba(238,247,248,0.72),rgba(255,255,255,0.88))]`}>
           {!selectedExists ? <div className="grid h-full min-h-0 place-items-center p-6 text-center"><div className="max-w-lg rounded-3xl border border-line bg-white/90 p-7 shadow-xl"><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand/10 text-brand"><MessageCircle size={26} /></span><h2 className="mt-4 text-xl font-semibold text-ink">{uiLabel(uiLanguage, { zh: "还没有聊天会话", en: "No chats yet", hi: "अभी कोई चैट नहीं" })}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{uiLabel(uiLanguage, { zh: "添加新联系人开始聊天，或者先和 Glimpse 智能助手对话。正式版不会显示演示聊天窗口。", en: "Add a new contact to start chatting, or talk with Glimpse Assistant. No demo chat is shown in the production app.", hi: "नया संपर्क जोड़ें या Glimpse Assistant से बात करें। प्रोडक्शन ऐप में डेमो चैट नहीं दिखाई जाती।" })}</p><div className="mt-5 flex flex-wrap justify-center gap-3"><button className="inline-flex h-11 items-center gap-2 rounded bg-brand px-4 font-semibold text-white" onClick={() => { setTab("contacts"); setMobilePane("list"); }} type="button"><UserPlus size={17} />{uiLabel(uiLanguage, { zh: "添加联系人", en: "Add contact", hi: "संपर्क जोड़ें" })}</button><button className="inline-flex h-11 items-center gap-2 rounded border border-line bg-white px-4 font-semibold text-ink hover:border-brand" onClick={() => setAssistantOpen(true)} type="button"><Bot size={17} />{uiLabel(uiLanguage, { zh: "智能助手", en: "Assistant", hi: "सहायक" })}</button></div></div></div> : <>
           <header className="flex min-h-[76px] items-center gap-3 border-b border-white/70 bg-white/75 px-3 backdrop-blur-xl sm:px-4">
-            <button aria-label={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-line bg-white text-ink shadow-sm hover:border-brand lg:hidden" onClick={() => setMobilePane("list")} title={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} type="button">
+            <button aria-label={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-line bg-white text-ink shadow-sm hover:border-brand lg:hidden" onClick={() => returnFromCurrentAndroidView(() => setMobilePane("list"))} title={uiLabel(uiLanguage, { zh: "返回聊天", en: "Back to chats", hi: "चैट पर वापस" })} type="button">
               <ArrowLeft size={18} />
             </button>
             <button aria-label={selected.type === "group" ? t.groupManage : t.viewContactDetails} className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left transition hover:bg-white/70" onClick={openSelectedDetails} type="button">

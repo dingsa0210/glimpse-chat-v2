@@ -1,6 +1,6 @@
 # Glimpse Chat Android (TWA)
 
-> Samsung/Android 15 compatibility: the checked-in Android project uses Android Browser Helper 2.7.2 and a WebView fallback with explicit Internet access. Do not downgrade the helper dependency or remove the `INTERNET` permission when regenerating the project. Version 1.0.3 (versionCode 4) includes the Samsung launch fixes, fresh-context relaunch behavior, and the `Glimpse Chat` launcher name.
+> Samsung/Android 15 compatibility: the checked-in Android project uses Android Browser Helper 2.7.2 and a WebView fallback with explicit Internet access. Do not downgrade the helper dependency or remove the `INTERNET` permission when regenerating the project. Version 1.0.4 (versionCode 5) includes the Samsung launch fixes, fresh-context relaunch behavior, Android navigation history, the updated launcher icon, and the `Glimpse Chat` launcher name.
 
 这个目录是 `https://glimpsechat.com` 的 Trusted Web Activity Android 外壳，包名固定为 `com.glimpsechat.app`。网页功能更新会随线上站点自动生效；包名、图标、权限或原生依赖改变时才需要重新发布 AAB/APK。
 

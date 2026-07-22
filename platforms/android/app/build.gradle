@@ -23,7 +23,7 @@ plugins {
 def twaManifest = [
     applicationId: 'com.glimpsechat.app',
     hostName: 'glimpsechat.com', // The domain being opened in the TWA.
-    launchUrl: '/?source=android-twa&appVersion=1.0.3&versionCode=4', // The start path for the TWA. Must be relative to the domain.
+    launchUrl: '/?source=android-twa&appVersion=1.0.4&versionCode=5', // The start path for the TWA. Must be relative to the domain.
     name: 'Glimpse Chat', // The application name.
     launcherName: 'Glimpse Chat', // The name shown on the Android Launcher.
     themeColor: '#0F766E', // The color used for the status bar.
@@ -58,8 +58,8 @@ android {
         applicationId "com.glimpsechat.app"
         minSdkVersion 23
         targetSdkVersion 35
-        versionCode 4
-        versionName "1.0.3"
+        versionCode 5
+        versionName "1.0.4"
 
         // The name for the application
         resValue "string", "appName", twaManifest.name
