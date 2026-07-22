@@ -49,6 +49,7 @@ export function GlimpseAssistant({ open, onClose, apiUrl, accessToken, userId, u
   const [downloadingFileId, setDownloadingFileId] = useState("");
   const fileInput = useRef<HTMLInputElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
+  const dialog = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
   useEffect(() => {
@@ -56,6 +57,35 @@ export function GlimpseAssistant({ open, onClose, apiUrl, accessToken, userId, u
   }, [storageKey]);
   useEffect(() => { if (mounted) { try { localStorage.setItem(storageKey, JSON.stringify(messages.slice(-50).map((message) => { const stored = { ...message }; delete stored.previewUrl; return stored; }))); } catch {} } }, [messages, mounted, storageKey]);
   useEffect(() => { if (open) window.setTimeout(() => bottom.current?.scrollIntoView({ behavior: "smooth" }), 0); }, [messages, loading, open]);
+  useEffect(() => {
+    if (!open || document.documentElement.dataset.glimpseClient !== "android-app") return;
+
+    const visualViewport = window.visualViewport;
+    let animationFrame = 0;
+    const updateVisibleViewport = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        const viewportHeight = Math.max(1, Math.round(visualViewport?.height ?? window.innerHeight));
+        const viewportTop = Math.max(0, Math.round(visualViewport?.offsetTop ?? 0));
+        dialog.current?.style.setProperty("--glimpse-assistant-visible-height", `${viewportHeight}px`);
+        dialog.current?.style.setProperty("--glimpse-assistant-visible-top", `${viewportTop}px`);
+      });
+    };
+
+    updateVisibleViewport();
+    visualViewport?.addEventListener("resize", updateVisibleViewport);
+    visualViewport?.addEventListener("scroll", updateVisibleViewport);
+    window.addEventListener("resize", updateVisibleViewport);
+    window.addEventListener("orientationchange", updateVisibleViewport);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      visualViewport?.removeEventListener("resize", updateVisibleViewport);
+      visualViewport?.removeEventListener("scroll", updateVisibleViewport);
+      window.removeEventListener("resize", updateVisibleViewport);
+      window.removeEventListener("orientationchange", updateVisibleViewport);
+    };
+  }, [open]);
 
   async function send(event?: FormEvent, promptOverride?: string) {
     event?.preventDefault();
@@ -166,9 +196,9 @@ export function GlimpseAssistant({ open, onClose, apiUrl, accessToken, userId, u
 
   if (!mounted || !open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-[170] flex bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5" role="dialog" aria-modal="true" aria-label={t.title}>
-      <section className="flex h-full w-full flex-col overflow-hidden bg-paper shadow-2xl sm:h-[min(820px,92vh)] sm:max-w-3xl sm:rounded-[30px] sm:border sm:border-white/60">
-        <header className="flex items-center gap-3 border-b border-line bg-white px-4 py-3 sm:px-5">
+    <div ref={dialog} className="glimpse-assistant-dialog fixed inset-0 z-[170] flex bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5" role="dialog" aria-modal="true" aria-label={t.title}>
+      <section className="glimpse-assistant-panel flex h-full w-full flex-col overflow-hidden bg-paper shadow-2xl sm:h-[min(820px,92vh)] sm:max-w-3xl sm:rounded-[30px] sm:border sm:border-white/60">
+        <header className="glimpse-assistant-header flex shrink-0 items-center gap-3 border-b border-line bg-white px-4 py-3 sm:px-5">
           <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-teal-600 to-cyan-500 text-white shadow"><Bot size={23} /></span>
           <div className="min-w-0 flex-1"><h2 className="font-semibold text-ink">{t.title}</h2><p className="truncate text-xs text-slate-500">{t.subtitle}</p></div>
           <button className="grid h-10 w-10 place-items-center rounded-2xl text-slate-500 hover:bg-paper hover:text-ink" onClick={() => { if (confirm(t.clear)) { messages.forEach((message) => { if (message.previewUrl) URL.revokeObjectURL(message.previewUrl); }); setMessages([]); } }} title={t.clear} type="button"><Trash2 size={18} /></button>
@@ -180,7 +210,7 @@ export function GlimpseAssistant({ open, onClose, apiUrl, accessToken, userId, u
           {loading ? <div className="flex justify-start"><div className="rounded-3xl rounded-bl-lg border border-line bg-white px-4 py-3 text-sm text-slate-500 shadow-sm"><span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-brand" />{t.working}</div></div> : null}
           {error ? <p className="rounded-2xl border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral" role="alert">{error}</p> : null}<div ref={bottom} />
         </div>
-        <form className="border-t border-line bg-white p-3 sm:p-4" onSubmit={(event) => void send(event)}>
+        <form className="glimpse-assistant-composer shrink-0 border-t border-line bg-white p-3 sm:p-4" onSubmit={(event) => void send(event)}>
           <div className="mb-2 flex gap-2 overflow-x-auto pb-1">{t.prompts.map((prompt, index) => <button key={prompt} className="shrink-0 rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-brand hover:text-brand" onClick={() => index < 2 ? void send(undefined, `${prompt}${uiLanguage === "zh" ? "，生成后直接发送到当前聊天。" : uiLanguage === "hi" ? " और बनने के बाद वर्तमान चैट में सीधे भेजें।" : " and send it directly to the current chat when ready."}`) : setDraft(prompt)} type="button">{prompt}{index < 2 ? uiLanguage === "zh" ? " · 直接发送" : uiLanguage === "hi" ? " · सीधे भेजें" : " · Send now" : ""}</button>)}</div>
           {file ? <div className="mb-2 flex items-center gap-3 rounded-2xl border border-brand/20 bg-brand/5 px-3 py-2 text-xs text-brand">{attachmentKind(file) === "image" && filePreview ? <NextImage unoptimized src={filePreview} alt={file.name} width={48} height={48} className="h-12 w-12 rounded-xl object-cover" /> : attachmentKind(file) === "video" && filePreview ? <video className="h-12 w-16 rounded-xl bg-black object-cover" muted preload="metadata" src={filePreview} /> : <FileText size={18} />}<span className="min-w-0 flex-1 truncate">{t.fileReady}: {file.name}</span><button onClick={() => chooseFile(null)} type="button"><X size={15} /></button></div> : null}
           <div className="flex items-end gap-2 rounded-3xl border border-line bg-paper/60 p-2 focus-within:border-brand">

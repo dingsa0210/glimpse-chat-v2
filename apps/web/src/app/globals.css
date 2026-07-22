@@ -38,6 +38,42 @@ html[data-glimpse-client="android-app"] .glimpse-sidebar-scroll {
   scroll-padding-bottom: max(2rem, env(safe-area-inset-bottom, 0px));
 }
 
+/*
+ * Keep the assistant inside Android's actual visible viewport. The visual
+ * viewport variables are updated while the keyboard opens, closes, or pans the
+ * page; safe-area padding protects status bars, cutouts, and gesture controls.
+ * These selectors never apply to the regular web client.
+ */
+html[data-glimpse-client="android-app"] .glimpse-assistant-dialog {
+  inset: auto 0;
+  top: var(--glimpse-assistant-visible-top, 0px);
+  height: var(--glimpse-assistant-visible-height, 100dvh);
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  overscroll-behavior: contain;
+}
+
+html[data-glimpse-client="android-app"] .glimpse-assistant-panel {
+  height: 100%;
+  max-height: none;
+  max-width: none;
+  border: 0;
+  border-radius: 0;
+}
+
+html[data-glimpse-client="android-app"] .glimpse-assistant-header {
+  padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+  padding-left: max(1rem, env(safe-area-inset-left, 0px));
+  padding-right: max(1rem, env(safe-area-inset-right, 0px));
+}
+
+html[data-glimpse-client="android-app"] .glimpse-assistant-composer {
+  padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
+}
+
 button,
 input,
 textarea {
