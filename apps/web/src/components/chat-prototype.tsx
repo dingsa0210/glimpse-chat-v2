@@ -42,7 +42,8 @@ type AndroidNavigationView =
   | "composer-menu"
   | "sticker-panel";
 type AndroidNavigationSnapshot = {
-  version: 1;
+  version: 2;
+  depth: 0 | 1 | 2;
   userId: string;
   tab: Tab;
   mobilePane: MobilePane;
@@ -86,7 +87,8 @@ function readAndroidNavigationSnapshot(state: unknown): AndroidNavigationSnapsho
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
   const value = candidate as Partial<AndroidNavigationSnapshot>;
   if (
-    value.version !== 1
+    value.version !== 2
+    || ![0, 1, 2].includes(value.depth ?? -1)
     || typeof value.userId !== "string"
     || !["chats", "contacts", "meetings", "moments", "me"].includes(value.tab ?? "")
     || !["list", "chat"].includes(value.mobilePane ?? "")
@@ -106,13 +108,27 @@ function androidNavigationState(snapshot: AndroidNavigationSnapshot) {
 }
 
 function androidNavigationKey(snapshot: AndroidNavigationSnapshot) {
-  return JSON.stringify(snapshot);
+  return JSON.stringify({
+    version: snapshot.version,
+    userId: snapshot.userId,
+    tab: snapshot.tab,
+    mobilePane: snapshot.mobilePane,
+    conversationId: snapshot.conversationId,
+    globalQuery: snapshot.globalQuery,
+    view: snapshot.view
+  });
 }
 
-function androidNavigationUrl(sequence: number, view: AndroidNavigationView) {
+function androidNavigationUrl(depth: AndroidNavigationSnapshot["depth"], view: AndroidNavigationView) {
   const url = new URL(window.location.href);
-  url.hash = `glimpse-android-nav-${sequence}-${view}`;
+  url.hash = `glimpse-android-nav-${depth}-${view}`;
   return url.toString();
+}
+
+function androidNavigationTier(snapshot: AndroidNavigationSnapshot): "home" | "operation" | "detail" {
+  if (snapshot.view !== "main") return "detail";
+  if (snapshot.tab === "chats" && snapshot.mobilePane === "list" && !snapshot.globalQuery) return "home";
+  return "operation";
 }
 type ScreenshotTool = 'select' | 'pen' | 'highlight' | 'mosaic' | 'rectangle' | 'ellipse' | 'arrow' | 'text';
 type ScreenshotPenType = 'round' | 'square' | 'dashed';
@@ -3577,7 +3593,6 @@ export function ChatPrototype() {
   const [workspaceViewReadyUserId, setWorkspaceViewReadyUserId] = useState("");
   const androidNavigationReadyUserIdRef = useRef("");
   const androidNavigationApplyingRef = useRef(false);
-  const androidNavigationSequenceRef = useRef(0);
   const pendingQuoteJumpRef = useRef<string | null>(null);
   const groupMembersRequestRef = useRef(0);
 
@@ -3604,7 +3619,8 @@ export function ChatPrototype() {
                                           : globalQuery.trim() ? "search"
                                             : "main";
   const androidNavigationSnapshot: AndroidNavigationSnapshot = {
-    version: 1,
+    version: 2,
+    depth: 0,
     userId: currentUser?.id ?? "",
     tab,
     mobilePane,
@@ -3648,7 +3664,6 @@ export function ChatPrototype() {
     if (!isAndroidAppRequest() || !userId || workspaceViewReadyUserId !== userId) {
       androidNavigationReadyUserIdRef.current = "";
       androidNavigationApplyingRef.current = false;
-      androidNavigationSequenceRef.current = 0;
       return;
     }
 
@@ -3702,10 +3717,10 @@ export function ChatPrototype() {
 
     window.addEventListener("popstate", handleAndroidPopState);
     if (androidNavigationReadyUserIdRef.current !== userId) {
-      androidNavigationSequenceRef.current = 0;
       const initialSnapshot = androidNavigationSnapshotRef.current;
       const homeSnapshot: AndroidNavigationSnapshot = {
-        version: 1,
+        version: 2,
+        depth: 0,
         userId,
         tab: "chats",
         mobilePane: "list",
@@ -3715,8 +3730,8 @@ export function ChatPrototype() {
       };
       window.history.replaceState(androidNavigationState(homeSnapshot), "", androidNavigationUrl(0, homeSnapshot.view));
       if (androidNavigationKey(initialSnapshot) !== androidNavigationKey(homeSnapshot)) {
-        androidNavigationSequenceRef.current += 1;
-        window.history.pushState(androidNavigationState(initialSnapshot), "", androidNavigationUrl(androidNavigationSequenceRef.current, initialSnapshot.view));
+        const initialEntry: AndroidNavigationSnapshot = { ...initialSnapshot, depth: 1 };
+        window.history.pushState(androidNavigationState(initialEntry), "", androidNavigationUrl(initialEntry.depth, initialEntry.view));
       }
       androidNavigationReadyUserIdRef.current = userId;
     }
@@ -3727,18 +3742,40 @@ export function ChatPrototype() {
   useEffect(() => {
     const userId = currentUser?.id ?? "";
     if (!isAndroidAppRequest() || !userId || workspaceViewReadyUserId !== userId || androidNavigationReadyUserIdRef.current !== userId) return;
-    const nextSnapshot = androidNavigationSnapshotRef.current;
+    const nextViewState = androidNavigationSnapshotRef.current;
     const currentSnapshot = readAndroidNavigationSnapshot(window.history.state);
-    const currentKey = currentSnapshot ? androidNavigationKey(currentSnapshot) : "";
+    if (!currentSnapshot) return;
+
+    const currentTier = androidNavigationTier(currentSnapshot);
+    const nextTier = androidNavigationTier(nextViewState);
+    const nextDepth: AndroidNavigationSnapshot["depth"] = nextTier === "home"
+      ? 0
+      : nextTier === "operation"
+        ? 1
+        : currentTier === "detail"
+          ? currentSnapshot.depth
+          : Math.min(2, currentSnapshot.depth + 1) as AndroidNavigationSnapshot["depth"];
+    const nextSnapshot: AndroidNavigationSnapshot = { ...nextViewState, depth: nextDepth };
+    const currentKey = androidNavigationKey(currentSnapshot);
     const nextKey = androidNavigationKey(nextSnapshot);
     if (androidNavigationApplyingRef.current) {
       androidNavigationApplyingRef.current = false;
-      if (currentKey !== nextKey) window.history.replaceState(androidNavigationState(nextSnapshot), "", window.location.href);
+      if (currentKey !== nextKey || currentSnapshot.depth !== nextDepth) {
+        window.history.replaceState(androidNavigationState(nextSnapshot), "", androidNavigationUrl(nextDepth, nextSnapshot.view));
+      }
       return;
     }
-    if (currentKey === nextKey) return;
-    androidNavigationSequenceRef.current += 1;
-    window.history.pushState(androidNavigationState(nextSnapshot), "", androidNavigationUrl(androidNavigationSequenceRef.current, nextSnapshot.view));
+    if (currentKey === nextKey && currentSnapshot.depth === nextDepth) return;
+    if (nextDepth < currentSnapshot.depth) {
+      androidNavigationApplyingRef.current = true;
+      window.history.go(nextDepth - currentSnapshot.depth);
+      return;
+    }
+    if (nextDepth > currentSnapshot.depth) {
+      window.history.pushState(androidNavigationState(nextSnapshot), "", androidNavigationUrl(nextDepth, nextSnapshot.view));
+      return;
+    }
+    window.history.replaceState(androidNavigationState(nextSnapshot), "", androidNavigationUrl(nextDepth, nextSnapshot.view));
   }, [
     androidNavigationView,
     currentUser?.id,
