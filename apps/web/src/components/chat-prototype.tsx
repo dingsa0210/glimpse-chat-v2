@@ -108,6 +108,12 @@ function androidNavigationState(snapshot: AndroidNavigationSnapshot) {
 function androidNavigationKey(snapshot: AndroidNavigationSnapshot) {
   return JSON.stringify(snapshot);
 }
+
+function androidNavigationUrl(sequence: number, view: AndroidNavigationView) {
+  const url = new URL(window.location.href);
+  url.hash = `glimpse-android-nav-${sequence}-${view}`;
+  return url.toString();
+}
 type ScreenshotTool = 'select' | 'pen' | 'highlight' | 'mosaic' | 'rectangle' | 'ellipse' | 'arrow' | 'text';
 type ScreenshotPenType = 'round' | 'square' | 'dashed';
 type ScreenshotPoint = { x: number; y: number };
@@ -3571,6 +3577,7 @@ export function ChatPrototype() {
   const [workspaceViewReadyUserId, setWorkspaceViewReadyUserId] = useState("");
   const androidNavigationReadyUserIdRef = useRef("");
   const androidNavigationApplyingRef = useRef(false);
+  const androidNavigationSequenceRef = useRef(0);
   const pendingQuoteJumpRef = useRef<string | null>(null);
   const groupMembersRequestRef = useRef(0);
 
@@ -3641,6 +3648,7 @@ export function ChatPrototype() {
     if (!isAndroidAppRequest() || !userId || workspaceViewReadyUserId !== userId) {
       androidNavigationReadyUserIdRef.current = "";
       androidNavigationApplyingRef.current = false;
+      androidNavigationSequenceRef.current = 0;
       return;
     }
 
@@ -3694,6 +3702,7 @@ export function ChatPrototype() {
 
     window.addEventListener("popstate", handleAndroidPopState);
     if (androidNavigationReadyUserIdRef.current !== userId) {
+      androidNavigationSequenceRef.current = 0;
       const initialSnapshot = androidNavigationSnapshotRef.current;
       const homeSnapshot: AndroidNavigationSnapshot = {
         version: 1,
@@ -3704,9 +3713,10 @@ export function ChatPrototype() {
         globalQuery: "",
         view: "main"
       };
-      window.history.replaceState(androidNavigationState(homeSnapshot), "", window.location.href);
+      window.history.replaceState(androidNavigationState(homeSnapshot), "", androidNavigationUrl(0, homeSnapshot.view));
       if (androidNavigationKey(initialSnapshot) !== androidNavigationKey(homeSnapshot)) {
-        window.history.pushState(androidNavigationState(initialSnapshot), "", window.location.href);
+        androidNavigationSequenceRef.current += 1;
+        window.history.pushState(androidNavigationState(initialSnapshot), "", androidNavigationUrl(androidNavigationSequenceRef.current, initialSnapshot.view));
       }
       androidNavigationReadyUserIdRef.current = userId;
     }
@@ -3727,7 +3737,8 @@ export function ChatPrototype() {
       return;
     }
     if (currentKey === nextKey) return;
-    window.history.pushState(androidNavigationState(nextSnapshot), "", window.location.href);
+    androidNavigationSequenceRef.current += 1;
+    window.history.pushState(androidNavigationState(nextSnapshot), "", androidNavigationUrl(androidNavigationSequenceRef.current, nextSnapshot.view));
   }, [
     androidNavigationView,
     currentUser?.id,
